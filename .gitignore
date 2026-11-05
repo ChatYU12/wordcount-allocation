@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# 系统 / 编辑器
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# 书稿 PDF 涉及版权，不入库（本地放 data/ 即可）
+data/*.pdf
+*.pdf
+
+# 运行产物
+*.log
+/tmp/
+
+# 与本工具无关的其他任务产物（DSH 迁移手册）
+dsh-migration/

@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<title>UI 自测</title>
+<style>body{font:14px/1.7 -apple-system,sans-serif;padding:20px}
+iframe{width:1280px;height:900px;border:1px solid #ddd}
+pre{background:#f6f6f6;padding:12px;border-radius:8px}</style>
+</head>
+<body>
+<pre id="log">RUNNING…</pre>
+<iframe id="app" src="/?demo=1"></iframe>
+<script>
+const out = [];
+const log = (ok, msg) => out.push((ok ? 'PASS' : 'FAIL') + '  ' + msg);
+const ifr = document.getElementById('app');
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+ifr.onload = async () => {
+  const d = ifr.contentDocument;
+  const $ = (s) => d.querySelector(s);
+
+  // 等示例书自动加载并完成首次分配
+  for (let i = 0; i < 60; i++) {
+    await sleep(250);
+    if ($('#resultTable tbody tr')) break;
+  }
+
+  const total = $('#totalWords');
+  const ppw = $('#ppw');
+  const cal = $('#calibrate');
+
+  // 示例书 294 页里有 2 页整页图，按国标折算后有效页 = 294 - 2×0.8 = 292.4
+  log(Math.abs(+total.value - 357898) <= 3, '初始 总字数=' + total.value + '（期望 357898 = 292.4 有效页×1224）');
+  log(+ppw.value === 1224, '初始 每页字数=' + ppw.value + '（期望 1224，输入源不被派生值覆盖）');
+
+  // ① 勾选：用名单需求合计作为总字数
+  cal.checked = true;
+  cal.dispatchEvent(new Event('change', { bubbles: true }));
+  await sleep(250);
+  log(+total.value === 360000, '勾选后 总字数=' + total.value + '（期望 360000）');
+  log(+ppw.value === 1224, '勾选后 每页字数=' + ppw.value + '（期望 1224）');
+
+  // ② 取消勾选，手动把总字数改成 330000
+  cal.checked = false;
+  cal.dispatchEvent(new Event('change', { bubbles: true }));
+  await sleep(150);
+  total.value = '330000';
+  total.dispatchEvent(new Event('input', { bubbles: true }));
+  await sleep(300);
+  log(+ppw.value === 1122, '手动 330000 后 每页字数=' + ppw.value + '（期望 1122）');
+  const stWords = ($('#stWords').textContent || '').replace(/[^\d]/g, '');
+  log(stWords === '330000', '统计栏 可分配字数=' + stWords + '（期望 330000）');
+
+  // ③ 生成方案，检查总额是否严格等于 330000
+  $('#runBtn').click();
+  await sleep(3000);
+  const rows = d.querySelectorAll('#resultTable tbody tr');
+  log(rows.length === 10, '结果表行数=' + rows.length + '（9 段 + 1 合计）');
+
+  // 合计行首列 colspan=4，故「分配字数」是第 4 个单元格
+  const cells = rows.length ? Array.from(rows[rows.length - 1].children).map((c) => c.textContent.trim()) : [];
+  const wordCell = (cells[3] || '').replace(/[^\d]/g, '');
+  log(wordCell === '330000', '合计行 分配字数=' + wordCell + '（期望 330000）');
+
+  // ④ 再改回 360000，确认可反复切换
+  total.value = '360000';
+  total.dispatchEvent(new Event('input', { bubbles: true }));
+  await sleep(300);
+  const st2 = ($('#stWords').textContent || '').replace(/[^\d]/g, '');
+  log(st2 === '360000', '改回 360000 后 统计栏=' + st2);
+
+  // ⑤ 结果表出现课时列且有值
+  $('#runBtn').click();
+  await sleep(3000);
+  const rows2 = d.querySelectorAll('#resultTable tbody tr');
+  const headCells = d.querySelectorAll('#resultTable thead th');
+  log(headCells.length === 11, '结果表列数=' + headCells.length + '（含课时列）');
+  const firstRow = rows2[0] ? Array.from(rows2[0].children).map((c) => c.textContent.trim()) : [];
+  log(firstRow[9] && firstRow[9] !== '—', '首段课时=' + firstRow[9]);
+
+  // ⑥ 切回「每页字数」口径，验证整页图开关会改变总字数
+  ppw.value = '1224';
+  ppw.dispatchEvent(new Event('input', { bubbles: true }));
+  await sleep(300);
+  const on = ($('#stWords').textContent || '').replace(/[^\d]/g, '');
+  const fig = $('#figureDiscount');
+  fig.checked = false;
+  fig.dispatchEvent(new Event('change', { bubbles: true }));
+  await sleep(400);
+  const off = ($('#stWords').textContent || '').replace(/[^\d]/g, '');
+  log(+off > +on, '关闭整页图折算后总字数回升：' + on + ' → ' + off);
+  log(off === '359856', '关闭后应回到 359856（294 页满版），实际 ' + off);
+
+  // ⑦ Excel 导入名单：下载内置模板再导入，名单应换成模板里的 4 人
+  const tplBlob = await (await fetch('/api/people-template')).blob();
+  const file = new File([tplBlob], '模板.xlsx', {
+    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  });
+  const dt = new DataTransfer();
+  dt.items.add(file);
+  const pf = d.querySelector('#peopleFile');
+  pf.files = dt.files;
+  pf.dispatchEvent(new Event('change', { bubbles: true }));
+  await sleep(2500);
+  const names = [...d.querySelectorAll('#peopleTable tbody input[data-k="name"]')]
+    .map((i) => i.value);
+  log(names.length === 4 && names[0] === '张三', 'Excel 导入后名单：' + names.join(' / '));
+  const roles = [...d.querySelectorAll('#peopleTable tbody select[data-k="role"]')]
+    .map((i) => i.value);
+  log(roles[0] === '主编' && roles[2] === '副主编', '导入后角色：' + roles.join(' / '));
+  const amts = [...d.querySelectorAll('#peopleTable tbody input[data-k="target_words"]')]
+    .map((i) => +i.value);
+  log(amts[0] === 60000 && amts[3] === 20000, '导入后字数：' + amts.join(' / '));
+
+  document.getElementById('log').textContent = 'RESULT\n' + out.join('\n');
+  document.title = out.every((x) => x.startsWith('PASS')) ? 'ALL_PASS' : 'HAS_FAIL';
+};
+</script>
+</body>
+</html>
