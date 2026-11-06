@@ -13,8 +13,11 @@ import time
 from urllib.parse import quote
 from typing import Dict, List, Optional
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+import hashlib
+import hmac
+
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -31,8 +34,77 @@ STATIC_DIR = os.path.join(BASE_DIR, "static")
 
 app = FastAPI(title="书稿字数分配工具")
 
+
+@app.get("/login", response_class=HTMLResponse)
+def login_page(error: str = "") -> HTMLResponse:
+    err = '<div class="err">口令不对，请重试</div>' if error else ""
+    return HTMLResponse(LOGIN_PAGE.replace("{ERROR}", err))
+
+
+@app.post("/login")
+def do_login(code: str = Form("")):
+    ok = bool(ACCESS_CODE) and hmac.compare_digest(code.strip(), ACCESS_CODE)
+    if not ok:
+        return RedirectResponse("/login?error=1", status_code=303)
+    resp = RedirectResponse("/", status_code=303)
+    resp.set_cookie("wca_auth", _AUTH_TOKEN, httponly=True, samesite="lax", max_age=7 * 86400)
+    return resp
+
+
+@app.get("/logout")
+def logout():
+    resp = RedirectResponse("/login", status_code=303)
+    resp.delete_cookie("wca_auth")
+    return resp
+
+
+@app.middleware("http")
+async def access_gate(request: Request, call_next):
+    """设了 ACCESS_CODE 才启用；本地运行完全不受影响。"""
+    if not ACCESS_CODE:
+        return await call_next(request)
+    path = request.url.path
+    if path.startswith("/login") or path.startswith("/logout"):
+        return await call_next(request)
+    if hmac.compare_digest(request.cookies.get("wca_auth", ""), _AUTH_TOKEN):
+        return await call_next(request)
+    if path.startswith("/api/"):
+        return JSONResponse({"detail": "需要访问口令"}, status_code=401)
+    return RedirectResponse("/login", status_code=303)
+
 # 最近一次解析结果（单用户本地工具，够用）
 _CACHE: Dict[str, Dict] = {}
+
+# ---- 访问口令（仅公网穿透时启用；本地不设环境变量即无口令） ----
+ACCESS_CODE = os.environ.get("ACCESS_CODE", "").strip()
+_AUTH_TOKEN = hashlib.sha256(f"wca:{ACCESS_CODE}".encode()).hexdigest() if ACCESS_CODE else ""
+
+LOGIN_PAGE = """<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>需要访问口令 · 书稿字数分配工具</title>
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;
+    background:#f5f6f8;font:15px/1.6 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;color:#1f2933}
+  .box{background:#fff;padding:38px 34px;border-radius:14px;box-shadow:0 8px 32px rgba(31,41,51,.10);width:min(92vw,380px)}
+  h1{margin:0 0 6px;font-size:19px}
+  p.sub{margin:0 0 22px;color:#6b7684;font-size:13px}
+  input{width:100%;padding:11px 13px;border:1px solid #d5dae1;border-radius:9px;font-size:15px;outline:none}
+  input:focus{border-color:#1f3a5f;box-shadow:0 0 0 3px rgba(31,58,95,.08)}
+  button{margin-top:14px;width:100%;padding:11px;border:0;border-radius:9px;background:#1f3a5f;color:#fff;
+    font-size:15px;font-weight:600;cursor:pointer}
+  button:hover{background:#2b4d7a}
+  .err{margin-top:12px;color:#c0392b;font-size:13px}
+</style></head><body>
+<form class="box" method="post" action="/login">
+  <h1>书稿字数分配工具</h1>
+  <p class="sub">此工具已开启访问保护，请输入访问口令</p>
+  <input type="password" name="code" placeholder="访问口令" autofocus autocomplete="current-password">
+  <button type="submit">进入</button>
+  {ERROR}
+</form></body></html>"""
+
 
 DEFAULT_PEOPLE = [
     {"name": "夏群", "role": "主编", "target_words": 60000},

@@ -122,7 +122,39 @@ python3 -m pip install --user fastapi uvicorn pymupdf openpyxl python-multipart
 
 ---
 
-## 三、名单从哪来
+## 三、公网访问（内网穿透，可选）
+
+想在手机、或发给同事用，可以把本地服务通过 Cloudflare 隧道暴露出去。**两步：**
+
+```bash
+# 1. 带访问口令启动（不设 ACCESS_CODE 就是现在这样，本地不需要口令）
+ACCESS_CODE=你的口令 PORT=8770 python3 app/server.py
+
+# 2. 另开终端，建隧道（cloudflared 需先安装，见下）
+cloudflared tunnel --url http://127.0.0.1:8770 --protocol http2
+```
+
+第二条命令会打印一个 `https://xxx.trycloudflare.com` 地址，任何人打开它都会先看到口令页，输对了才能用。口令可通过 `/logout` 退出。
+
+### 装 cloudflared（macOS / Apple Silicon）
+
+```bash
+curl -L -o /tmp/cf.tgz https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-darwin-arm64.tgz
+tar -xzf /tmp/cf.tgz -C ~/.local/bin && chmod +x ~/.local/bin/cloudflared
+```
+
+### 踩过的坑
+
+- **ClashX / 代理软件的 TUN（增强模式）会把隧道流量拦死**：表现为 `failed to dial with quic: timeout` 或 `TLS handshake with edge error: EOF`。关掉增强模式（保留系统代理即可）就正常。
+- 默认 QUIC 走 UDP 443，被拦时加 `--protocol http2` 走 TCP。
+- 隧道地址是**临时的**：cloudflared 进程一停、电脑一关就失效，每次启动都是新地址。
+- 这是免费隧道，不保证带宽和稳定性，只适合临时分享，不适合长期对外服务。
+
+### 安全
+
+暴露到公网意味着**拿到地址的人都能上传书稿**，务必设 `ACCESS_CODE`。口令不对时 `/api/*` 一律返回 401，页面请求跳转登录。
+
+## 四、名单从哪来
 
 ### 直接从 Excel 导入
 
@@ -146,7 +178,7 @@ python3 -m pip install --user fastapi uvicorn pymupdf openpyxl python-multipart
 
 ---
 
-## 四、折合课时与编写任务书
+## 五、折合课时与编写任务书
 
 ### 折合课时
 
@@ -169,7 +201,7 @@ python3 -m pip install --user fastapi uvicorn pymupdf openpyxl python-multipart
 
 ---
 
-## 五、为什么偏差做不到 0
+## 六、为什么偏差做不到 0
 
 任务粒度决定精度，不是算法问题。示例书实际结果（总字数 360,000）：
 
