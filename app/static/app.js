@@ -381,6 +381,7 @@ async function uploadPdf(file) {
     }
     state.bookTitle = (data.filename || '').replace(/\.pdf$/i, '');
     state.units = data.units.map((u) => ({ ...u }));
+    const authorNote = applyDetectedAuthors(data.authors);
     recomputeWords(); syncWordInputs();
     renderUnits();
     updateStats();
@@ -398,6 +399,29 @@ async function uploadPdf(file) {
   } finally {
     state.parsing = false;
   }
+}
+
+/* ---------------- 扉页名单 ---------------- */
+const DEFAULT_WORDS_BY_ROLE = { 主编: 60000, 副主编: 40000, 参编: 20000 };
+
+/* 把扉页识别到的编写名单填进名单表；总主编默认不纳入分配（一般只署名不写章节） */
+function applyDetectedAuthors(authors) {
+  if (!Array.isArray(authors) || !authors.length) return '';
+  const workable = authors.filter((a) => a.role !== '总主编');
+  const skipped = authors.length - workable.length;
+  if (!workable.length) return '';
+  state.people = workable.map((a) => ({
+    name: a.name,
+    role: a.role,
+    target_words: DEFAULT_WORDS_BY_ROLE[a.role] || 20000,
+    allow_pair: true,
+  }));
+  renderPeople();
+  updateStats();
+  const tail = skipped ? `，另有 ${skipped} 位总主编已识别但未纳入（只署名不写章节）` : '';
+  const msg = `已从扉页识别 ${workable.length} 位编写人${tail}。字数是按角色填的默认值，请核对调整。`;
+  toast(msg);
+  return msg;
 }
 
 /* ---------------- 示例书 ---------------- */

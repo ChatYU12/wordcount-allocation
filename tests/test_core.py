@@ -475,3 +475,37 @@ class TestPeopleImport(unittest.TestCase):
         self.assertEqual(len(res["people"]), 4)
         self.assertEqual(res["people"][0]["name"], "张三")
         self.assertEqual(res["people"][3]["target_words"], 20000)
+
+
+class TestAuthorDetection(unittest.TestCase):
+    """扉页编写名单识别。"""
+
+    def test_sample_book_authors(self):
+        import sys
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
+        from pdf_parser import parse_book
+        path = os.path.join(os.path.dirname(__file__), "..", "data",
+                            "0601终稿-老年人能力评估实务.pdf")
+        if not os.path.exists(path):
+            self.skipTest("示例书未随仓库分发")
+        res = parse_book(path)
+        authors = res.get("authors", [])
+        names = [a["name"] for a in authors]
+        roles = {a["name"]: a["role"] for a in authors}
+        self.assertEqual(len(authors), 11)
+        self.assertEqual(roles["邹文开"], "总主编")
+        self.assertEqual(roles["夏群"], "主编")
+        self.assertEqual(roles["汪涛"], "副主编")
+        self.assertEqual(roles["梁锦"], "参编")
+        # 目录页的「项目检测」「岗位实践」不能混进来
+        for bad in ("项目检测", "岗位实践", "能力拓展", "参考文献", "模块一"):
+            self.assertNotIn(bad, names)
+
+    def test_role_normalization(self):
+        import sys
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
+        from pdf_parser import _norm_author_role
+        self.assertEqual(_norm_author_role("总主编"), "总主编")
+        self.assertEqual(_norm_author_role("副主编"), "副主编")
+        self.assertEqual(_norm_author_role("主编"), "主编")
+        self.assertEqual(_norm_author_role("编委"), "参编")

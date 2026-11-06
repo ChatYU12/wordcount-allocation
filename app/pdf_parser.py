@@ -285,6 +285,95 @@ def detect_figure_pages(
     return count
 
 
+
+# ---------------- 扉页编写名单识别 ----------------
+_ROLE_MARK_WORDS = [
+    ("总主编", "总主编"),
+    ("副总主编", "副主编"),
+    ("副主编", "副主编"),
+    ("主编", "主编"),
+    ("参编", "参编"),
+    ("编委", "参编"),
+    ("编者", "参编"),
+]
+_ROLE_MARK_RE = re.compile("^(" + "|".join(w for w, _ in _ROLE_MARK_WORDS) + ")")
+_AUTHOR_NAME_RE = re.compile(r"^[\u4e00-\u9fa5]{2,4}$")
+_AUTHOR_NOISE = {
+    "编委会", "编写组", "出版社", "主编", "副主编", "参编", "编委", "编者", "总主编",
+    "组织编写", "编写人员", "前言", "目录", "序言", "内容提要", "模块一", "模块二",
+    "模块三", "模块四", "模块五", "项目检测", "岗位实践", "能力拓展", "参考文献",
+    "附录", "后记", "编审", "审定", "顾问", "统筹",
+}
+
+
+def _norm_author_role(word: str) -> str:
+    for k, v in _ROLE_MARK_WORDS:
+        if word == k:
+            return v
+    return "参编"
+
+
+def detect_authors(doc: "fitz.Document", max_pages: int = 12) -> List[Dict]:
+    """从扉页 / 版权页识别编写名单。
+
+    出版物扉页通常长这样（换行、全角空格分隔）：
+
+        总主编　邹文开
+        主　编　夏　群
+        邓竹君
+        副主编　汪　涛
+        ...
+
+    规则：角色词打头 → 其后是姓名；紧随其后的纯姓名行延续同一角色；
+    遇到任何非角色、非姓名的行就终止当前姓名块（这条最关键，否则会一路
+    吃到目录页的「项目检测」上）。
+    """
+    authors: List[Dict] = []
+    current = None
+    for i in range(min(max_pages, doc.page_count)):
+        try:
+            page_text = doc[i].get_text()
+        except Exception:  # noqa: BLE001
+            continue
+        if not page_text:
+            continue
+        # 目录页：点线引导符密集，或出现「目录」字样 → 名单区已结束
+        if page_text.count("\u8004\u8005") > 0:  # 占位，真实判断在下一行
+            pass
+        if page_text.count("\uf0b7") > 5 or "\u200b" in page_text:
+            break
+        if re.search(r"(目\s*录|contents)", page_text, re.I):
+            break
+        for raw in page_text.splitlines():
+            line = raw.strip()
+            if not line:
+                continue
+            compact = re.sub(r"[\s\u3000\u00a0]+", "", line)
+            if not compact:
+                continue
+            m = _ROLE_MARK_RE.match(compact)
+            if m:
+                current = _norm_author_role(m.group(1))
+                rest = compact[m.end():]
+                if _AUTHOR_NAME_RE.match(rest) and rest not in _AUTHOR_NOISE:
+                    authors.append({"name": rest, "role": current})
+                continue
+            if current and _AUTHOR_NAME_RE.match(compact) and compact not in _AUTHOR_NOISE:
+                authors.append({"name": compact, "role": current})
+                continue
+            current = None
+
+    seen, out = set(), []
+    for a in authors:
+        if a["name"] in seen:
+            continue
+        seen.add(a["name"])
+        out.append(a)
+    rank = {"总主编": 0, "主编": 1, "副主编": 2, "参编": 3}
+    out.sort(key=lambda a: rank.get(a["role"], 9))
+    return out
+
+
 def build_units(
     nodes: List[Dict],
     offset: int,
@@ -457,6 +546,7 @@ def parse_book(
         include_ref=include_ref, figure_discount=figure_discount, texts=texts,
     )
     measure_real_chars(doc, units, off, texts=texts)
+    authors = detect_authors(doc)
 
     doc.close()
     return {
@@ -465,6 +555,7 @@ def parse_book(
         "toc_pages": [p + 1 for p in tpages],
         "offset": off,
         "figure_pages_total": sum(u.get("figure_pages", 0) for u in units),
+        "authors": authors,
         "nodes": nodes,
         "units": units,
     }

@@ -12,12 +12,17 @@ pre{background:#f6f6f6;padding:12px;border-radius:8px}</style>
 <iframe id="app" src="/?demo=1"></iframe>
 <script>
 const out = [];
-const log = (ok, msg) => out.push((ok ? 'PASS' : 'FAIL') + '  ' + msg);
+const log = (ok, msg) => {
+  out.push((ok ? 'PASS' : 'FAIL') + '  ' + msg);
+  const el = document.getElementById('log');
+  if (el) el.textContent = 'RUNNING…\n' + out.join('\n');
+};
 const ifr = document.getElementById('app');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 ifr.onload = async () => {
   const d = ifr.contentDocument;
+  const w = ifr.contentWindow;
   const $ = (s) => d.querySelector(s);
 
   // 等示例书自动加载并完成首次分配
@@ -112,6 +117,29 @@ ifr.onload = async () => {
   const amts = [...d.querySelectorAll('#peopleTable tbody input[data-k="target_words"]')]
     .map((i) => +i.value);
   log(amts[0] === 60000 && amts[3] === 20000, '导入后字数：' + amts.join(' / '));
+
+  // ⑧ 扉页名单识别 → 自动填表（总主编应被排除）
+  try {
+  if (typeof w.applyDetectedAuthors === 'function') {
+    w.applyDetectedAuthors([
+      { name: '邹文开', role: '总主编' },
+      { name: '夏群', role: '主编' },
+      { name: '汪涛', role: '副主编' },
+      { name: '梁锦', role: '参编' },
+    ]);
+    await sleep(300);
+    const fn = [...d.querySelectorAll('#peopleTable tbody input[data-k="name"]')].map((i) => i.value);
+    const fr = [...d.querySelectorAll('#peopleTable tbody select[data-k="role"]')].map((i) => i.value);
+    const fw = [...d.querySelectorAll('#peopleTable tbody input[data-k="target_words"]')].map((i) => +i.value);
+    log(fn.length === 3 && fn.join() === '夏群,汪涛,梁锦', '扉页名单填充：' + fn.join(' / '));
+    log(fr.join() === '主编,副主编,参编', '扉页角色：' + fr.join(' / '));
+    log(fw.join() === '60000,40000,20000', '扉页默认字数：' + fw.join(' / '));
+  } else {
+    log(false, '未找到 applyDetectedAuthors');
+  }
+  } catch (e) {
+    log(false, '扉页识别测试异常：' + (e && e.message ? e.message : e));
+  }
 
   document.getElementById('log').textContent = 'RESULT\n' + out.join('\n');
   document.title = out.every((x) => x.startsWith('PASS')) ? 'ALL_PASS' : 'HAS_FAIL';
