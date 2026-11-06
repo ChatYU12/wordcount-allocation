@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>书稿字数分配工具</title>
+<link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+<div class="demo-banner">
+  <span class="dot"></span>
+  <span><b>在线演示版</b> —— 数据为示例书《老年人能力评估实务》，分配结果由真实算法预先生成。
+  上传 PDF、重新分配、导入名单需<a href="https://github.com/ChatYU12/wordcount-allocation" target="_blank" rel="noopener">下载源码本地运行</a>。</span>
+</div>
+<style>
+.demo-banner{display:flex;gap:10px;align-items:flex-start;margin:0 0 18px;padding:13px 16px;
+  background:#fff8e6;border:1px solid #f0d9a8;border-radius:10px;font-size:13px;line-height:1.6;color:#6b4e12}
+.demo-banner .dot{width:8px;height:8px;border-radius:50%;background:#e0a800;margin-top:6px;flex:none}
+.demo-banner a{color:#8a5a00;text-decoration:underline;font-weight:600}
+</style>
+
+<header class="topbar">
+  <div class="brand">
+    <div class="logo">字</div>
+    <div>
+      <h1>书稿字数分配</h1>
+      <p class="sub">按目录页数 · 版面字数口径 · 任务级不拆分</p>
+    </div>
+  </div>
+  <div class="stats" id="topStats">
+    <div class="stat"><span class="k">可分配页数</span><span class="v" id="stPages">—</span></div>
+    <div class="stat"><span class="k">可分配字数</span><span class="v" id="stWords">—</span></div>
+    <div class="stat"><span class="k">名单需求</span><span class="v" id="stTarget">—</span></div>
+    <div class="stat"><span class="k">差额</span><span class="v" id="stGap">—</span></div>
+  </div>
+</header>
+
+<main>
+
+  <!-- ① 导入 -->
+  <section class="card" id="cardImport">
+    <div class="card-head">
+      <span class="step">1</span>
+      <h2>导入书稿</h2>
+      <span class="hint">上传 PDF，自动识别目录中的 模块 / 项目 / 任务</span>
+    </div>
+
+    <div class="dropzone" id="dropzone">
+      <input type="file" id="fileInput" accept="application/pdf,.pdf" hidden />
+      <div class="dz-inner">
+        <div class="dz-icon">PDF</div>
+        <p class="dz-title">把书籍 PDF 拖到这里，或 <button class="link" id="pickBtn">选择文件</button></p>
+        <p class="dz-note">文件只在本机解析，不上传任何服务器 · <button class="link" id="demoBtn">用示例书试用</button></p>
+      </div>
+    </div>
+
+    <div class="params">
+      <label class="field">
+        <span class="lbl">每页字数</span>
+        <input type="number" id="ppw" value="1200" min="1" step="1" />
+        <em class="tip">版面字数 = 页数 × 每页字数</em>
+      </label>
+      <label class="field">
+        <span class="lbl">全书总字数</span>
+        <input type="number" id="totalWords" value="0" min="0" step="1000" />
+        <em class="tip" id="totalTip">填这里就按总字数分摊到各章节</em>
+      </label>
+      <label class="field checkbox">
+        <input type="checkbox" id="calibrate" />
+        <span>用名单需求合计作为全书总字数</span>
+      </label>
+      <label class="field">
+        <span class="lbl">允许偏差</span>
+        <input type="range" id="tol" min="0" max="30" step="1" value="10" />
+        <span class="rangeval" id="tolVal">±10%</span>
+      </label>
+      <label class="field checkbox">
+        <input type="checkbox" id="includeRef" />
+        <span>参考文献计入分配</span>
+      </label>
+    </div>
+
+    <div class="params params-2">
+      <label class="field">
+        <span class="lbl">每 1000 字折合课时</span>
+        <input type="number" id="hoursPerK" value="1" min="0" step="0.1" />
+        <em class="tip">工作量折算系数，按所在单位口径填写；填 0 表示不折算</em>
+      </label>
+      <label class="field">
+        <span class="lbl">交稿截止日期</span>
+        <input type="date" id="deadline" />
+        <em class="tip">写入「编写任务书」工作表</em>
+      </label>
+      <label class="field checkbox">
+        <input type="checkbox" id="figureDiscount" checked />
+        <span>整页图按满版 20% 折算（国标口径）</span>
+      </label>
+    </div>
+    <p class="parse-note" id="parseNote"></p>
+  </section>
+
+  <!-- ② 名单 -->
+  <section class="card" id="cardPeople">
+    <div class="card-head">
+      <span class="step">2</span>
+      <h2>编写名单</h2>
+      <span class="hint">顺序即书稿先后顺序：主编在前，副主编、参编在后</span>
+      <div class="head-actions">
+        <button class="btn ghost sm" id="loadDefault">载入示例名单</button>
+        <button class="btn sm" id="importPeople">导入 Excel</button>
+        <button class="btn ghost sm" id="templateBtn">下载模板</button>
+        <input type="file" id="peopleFile" accept=".xlsx,.xlsm,.csv" hidden />
+      </div>
+    </div>
+    <div class="table-wrap">
+      <table class="tbl" id="peopleTable">
+        <thead>
+          <tr>
+            <th style="width:44px">顺序</th>
+            <th style="width:170px">姓名</th>
+            <th style="width:120px">角色</th>
+            <th style="width:150px">需要字数</th>
+            <th style="width:88px">可合作</th>
+            <th style="width:124px">操作</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="row-actions">
+      <button class="btn ghost sm" id="addPerson">+ 添加一人</button>
+      <span class="sum" id="peopleSum"></span>
+    </div>
+  </section>
+
+  <!-- ③ 章节 -->
+  <section class="card collapsed" id="cardUnits">
+    <div class="card-head">
+      <span class="step">3</span>
+      <h2>章节与页数</h2>
+      <span class="hint" id="unitSummary">解析后可在此核对、修正页数</span>
+      <button class="btn ghost sm" id="toggleUnits">展开 / 收起</button>
+    </div>
+    <div class="table-wrap scroll" id="unitsWrap">
+      <table class="tbl" id="unitsTable">
+        <thead>
+          <tr>
+            <th style="width:46px">#</th>
+            <th>单元</th>
+            <th style="width:132px">类型</th>
+            <th style="width:76px">起页</th>
+            <th style="width:86px">页数</th>
+            <th style="width:76px">止页</th>
+            <th style="width:92px">字数</th>
+            <th style="width:44px"></th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="row-actions">
+      <button class="btn ghost sm" id="addUnit">+ 添加单元</button>
+      <button class="btn ghost sm" id="toggleBulk">批量录入</button>
+      <span class="sum" id="unitSum"></span>
+    </div>
+    <div class="bulk" id="bulkPanel" hidden>
+      <p class="bulk-tip">每行一个单元，格式：<code>名称 页数</code> 或 <code>名称 起页 止页</code>，也可写成 <code>名称 起页-止页</code>。</p>
+      <textarea id="bulkText" rows="6" placeholder="项目一 职业认知 16&#10;任务一 职业岗位认知 5 11&#10;任务二 职业道德与素养 12-16"></textarea>
+      <div class="row-actions">
+        <button class="btn sm primary" id="bulkApply">导入这些单元</button>
+        <button class="btn sm ghost" id="bulkClear">清空现有单元后导入</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ④ 结果 -->
+  <section class="card" id="cardResult">
+    <div class="card-head">
+      <span class="step">4</span>
+      <h2>分配方案</h2>
+      <span class="hint" id="resultHint">填写名单后点击生成</span>
+      <div class="head-actions">
+        <button class="btn primary" id="runBtn">生成分配方案</button>
+        <button class="btn" id="copyBtn" disabled>复制表格</button>
+        <button class="btn" id="exportBtn" disabled>导出 Excel</button>
+      </div>
+    </div>
+
+    <div class="banners" id="banners"></div>
+
+    <div class="table-wrap">
+      <table class="tbl result" id="resultTable">
+        <thead>
+          <tr>
+            <th style="width:46px">段</th>
+            <th style="width:110px">角色</th>
+            <th style="width:130px">编写人</th>
+            <th>负责章节</th>
+            <th style="width:110px">页码</th>
+            <th style="width:70px">页数</th>
+            <th style="width:96px">分配字数</th>
+            <th style="width:90px">目标</th>
+            <th style="width:80px">偏差</th>
+            <th style="width:80px">课时</th>
+            <th style="width:110px">备注</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+</main>
+
+<footer class="foot">
+  <span>书稿字数分配工具 · 本机运行 · 版面字数口径</span>
+</footer>
+
+<div class="toast" id="toast"></div>
+
+<script src="./app.js"></script>
+<script src="./static-demo.js"></script>
+</body>
+</html>

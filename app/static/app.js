@@ -431,6 +431,7 @@ function payload(extra = {}) {
       index: u.index, label: u.label, kind: u.kind,
       start: u.start, end: u.end, pages: u.pages, words: u.words,
       project_no: u.project_no ?? null,
+      figure_pages: u.figure_pages || 0,
     })),
     people: state.people.map((p) => ({
       name: p.name, role: p.role,

@@ -22,3 +22,4 @@ data/*.pdf
 
 # 与本工具无关的其他任务产物（DSH 迁移手册）
 dsh-migration/
+scripts/.demo-bundle.json
