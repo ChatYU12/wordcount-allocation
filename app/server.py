@@ -406,6 +406,38 @@ def allocate(req: AllocateRequest) -> JSONResponse:
     return JSONResponse(res)
 
 
+def _diagnose_granularity(units: List[Dict], res: Dict) -> List[str]:
+    """解释偏差为什么降不下去：找出最稀疏的切点和最大的不可拆单元。"""
+    out: List[str] = []
+    pages = sorted({u["start"] for u in units} | {u["end"] + 1 for u in units})
+    if len(pages) >= 2:
+        gaps = [(pages[i + 1] - pages[i], pages[i], pages[i + 1]) for i in range(len(pages) - 1)]
+        gaps.sort(reverse=True)
+        widest = gaps[0]
+        if widest[0] >= 15:
+            out.append(
+                f"第 {widest[1]}–{widest[2]} 页之间没有任何可切点（跨度 {widest[0]} 页），"
+                f"这一段只能整块给一个人，是偏差的主要来源。"
+            )
+    biggest = max(units, key=lambda u: u["pages"])
+    total_pages = sum(u["pages"] for u in units) or 1
+    if biggest["pages"] / total_pages >= 0.15:
+        out.append(
+            f"最大的单个单元「{biggest['label']}」有 {biggest['pages']} 页"
+            f"（占全书 {biggest['pages'] / total_pages * 100:.0f}%），任务不拆时它就是不可分割的一整块。"
+        )
+    bad = [s for s in res.get("segments", []) if abs(s.get("delta_ratio", 0)) > 0.10]
+    if bad:
+        names = "、".join(
+            "+".join(m["name"] for m in s["members"]) for s in bad
+        )
+        out.append(
+            f"仍有 {len(bad)} 段超出 ±10%：{names}。"
+            f"在「任务不可拆」的前提下，这已经是本稿能达到的最好结果。"
+        )
+    return out
+
+
 @app.post("/api/optimize-order")
 def optimize(req: AllocateRequest) -> JSONResponse:
     """自动搜索偏差最小的名单顺序（同角色同目标的人互换不影响结果）。"""
@@ -431,6 +463,7 @@ def optimize(req: AllocateRequest) -> JSONResponse:
     res["per_page_words"] = req.per_page_words
     res["body_pages"] = total_pages
     res["units"] = units
+    res["diagnosis"] = _diagnose_granularity(units, res)
     return JSONResponse(res)
 
 

@@ -613,6 +613,8 @@ function renderResult() {
   };
 
   const bound = (r.best_bound * 100).toFixed(1);
+  // 偏差降不下去的诊断
+  (r.diagnosis || []).forEach((line) => add('warn', '!', escapeAttr(line)));
   if (r.within_declared_tolerance) {
     add('good', '✓', `全部 ${r.segments.length} 段都控制在 ±${(r.tolerance * 100).toFixed(0)}% 容差内（本书客观最小偏差 ±${bound}%）。`);
   } else {
