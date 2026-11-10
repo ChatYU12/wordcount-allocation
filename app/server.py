@@ -25,7 +25,8 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from allocator import (  # noqa: E402
-    allocate_best, distribute_words, infer_per_page_words, optimize_order, rescale_units,
+    allocate_best, allocate_under_bound, best_under_bound, distribute_words,
+    infer_per_page_words, optimize_order, optimize_under_bound, rescale_units,
 )
 from excel_export import build_workbook  # noqa: E402
 from pdf_parser import parse_book  # noqa: E402
@@ -158,6 +159,8 @@ class AllocateRequest(BaseModel):
     use_figure_discount: bool = True
     # 工作量折算：每 1000 字折合多少课时（0 表示不折算）
     hours_per_1000: float = 1.0
+    # 允许超额：只约束欠额，超额不限（业务上「多写没关系，少写不行」）
+    allow_over: bool = False
     # 任务书
     book_title: str = ""
     deadline: str = ""
@@ -353,15 +356,22 @@ def allocate(req: AllocateRequest) -> JSONResponse:
     else:
         scaled = rescale_units(units, ppw)
     try:
-        res = allocate_best(
-            scaled,
-            people,
-            tolerance=req.tolerance,
-            over_weight=req.over_weight,
-            under_weight=req.under_weight,
-            allowed_pairs=req.allowed_pairs,
-            boundary_penalty=req.boundary_penalty,
-        )
+        if req.allow_over:
+            res = best_under_bound(scaled, people, min_bound=0.01, max_bound=0.30, over_cap=2.0)
+            res["by_average"] = by_average
+            res["avg_words_per_page"] = round(
+                (req.total_words or sum(p["target_words"] for p in people)) / total_pages, 1
+            ) if total_pages else 0
+        else:
+            res = allocate_best(
+                scaled,
+                people,
+                tolerance=req.tolerance,
+                over_weight=req.over_weight,
+                under_weight=req.under_weight,
+                allowed_pairs=req.allowed_pairs,
+                boundary_penalty=req.boundary_penalty,
+            )
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(400, str(exc)) from exc
 
@@ -456,7 +466,10 @@ def optimize(req: AllocateRequest) -> JSONResponse:
         units = rescale_units(units, req.per_page_words)
 
     try:
-        res = optimize_order(units, people, tolerance=req.tolerance)
+        if req.allow_over:
+            res = optimize_under_bound(units, people, over_cap=2.0)
+        else:
+            res = optimize_order(units, people, tolerance=req.tolerance)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(400, str(exc)) from exc
 
@@ -483,15 +496,18 @@ def export(req: AllocateRequest) -> StreamingResponse:
         ppw = round(target_total / total_pages)
     else:
         scaled = rescale_units(units, ppw)
-    res = allocate_best(
-        scaled,
-        people,
-        tolerance=req.tolerance,
-        over_weight=req.over_weight,
-        under_weight=req.under_weight,
-        allowed_pairs=req.allowed_pairs,
-        boundary_penalty=req.boundary_penalty,
-    )
+    if req.allow_over:
+        res = best_under_bound(scaled, people, min_bound=0.01, max_bound=0.30, over_cap=2.0)
+    else:
+        res = allocate_best(
+            scaled,
+            people,
+            tolerance=req.tolerance,
+            over_weight=req.over_weight,
+            under_weight=req.under_weight,
+            allowed_pairs=req.allowed_pairs,
+            boundary_penalty=req.boundary_penalty,
+        )
     buf: io.BytesIO = build_workbook(
         res, people, units=scaled, per_page_words=ppw,
         options={

@@ -779,3 +779,78 @@ class TestOptimizeOrder(unittest.TestCase):
             if seg["cooperative"]:
                 roles = set(m["role"] for m in seg["members"])
                 self.assertEqual(roles, {"主编", "副主编"}, "合作段只能是主编+副主编")
+
+
+class TestAllowOver(unittest.TestCase):
+    """「允许超额」口径：只约束欠额。"""
+
+    def _units(self):
+        spec = [1, 5, 5, 14, 2, 55, 11, 1, 6, 6, 5, 2, 4, 5, 4, 5, 2, 7, 9, 8, 11, 7, 7, 7, 11]
+        out, start = [], 1
+        for i, pages in enumerate(spec):
+            out.append({"index": i, "label": f"单元{i+1}", "kind": "task",
+                        "start": start, "end": start + pages - 1, "pages": pages,
+                        "words": pages * 1300, "project_no": i, "figure_pages": 0})
+            start += pages
+        return out
+
+    def _people(self):
+        return [
+            {"name": "甲", "role": "主编", "target_words": 60000, "allow_pair": True},
+            {"name": "乙", "role": "主编", "target_words": 50000, "allow_pair": True},
+            {"name": "丙", "role": "主编", "target_words": 30000, "allow_pair": True},
+            {"name": "丁", "role": "副主编", "target_words": 20000, "allow_pair": True},
+            {"name": "戊", "role": "副主编", "target_words": 20000, "allow_pair": True},
+            {"name": "己", "role": "副主编", "target_words": 20000, "allow_pair": True},
+            {"name": "庚", "role": "副主编", "target_words": 20000, "allow_pair": True},
+            {"name": "辛", "role": "副主编", "target_words": 20000, "allow_pair": True},
+            {"name": "壬", "role": "副主编", "target_words": 20000, "allow_pair": True},
+        ]
+
+    def test_all_segments_respect_under_bound(self):
+        import sys
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
+        from allocator import optimize_under_bound
+        res = optimize_under_bound(self._units(), self._people(), over_cap=2.0)
+        bound = res["under_bound"]
+        for seg in res["segments"]:
+            self.assertGreaterEqual(seg["delta_ratio"], -bound - 1e-9,
+                                    f"{seg['members'][0]['name']} 欠额超过 {bound*100:.0f}%")
+            self.assertLessEqual(seg["delta_ratio"], 2.0 + 1e-9)
+        self.assertEqual(res["mode"], "under_bound")
+
+    def test_pages_conserved(self):
+        import sys
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
+        from allocator import optimize_under_bound
+        units = self._units()
+        res = optimize_under_bound(units, self._people(), over_cap=2.0)
+        self.assertEqual(sum(s["pages"] for s in res["segments"]),
+                         sum(u["pages"] for u in units))
+        # 段连续、不重叠
+        prev = 0
+        for seg in res["segments"]:
+            self.assertEqual(seg["start"], prev + 1)
+            prev = seg["end"]
+
+    def test_better_under_than_two_sided(self):
+        """允许超额后，最大欠额应优于双向 min-max 的欠额。"""
+        import sys
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
+        from allocator import optimize_order, optimize_under_bound
+        units, people = self._units(), self._people()
+        two = optimize_order(units, people, tolerance=0.15)
+        under = optimize_under_bound(units, people, over_cap=2.0)
+        worst_two = min(s["delta_ratio"] for s in two["segments"])
+        self.assertGreater(under["max_under"], worst_two,
+                           "允许超额后的最大欠额应当更小（更接近 0）")
+
+    def test_cooperation_still_chief_with_vice(self):
+        import sys
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
+        from allocator import optimize_under_bound
+        res = optimize_under_bound(self._units(), self._people(), over_cap=2.0)
+        for seg in res["segments"]:
+            if seg["cooperative"]:
+                roles = set(m["role"] for m in seg["members"])
+                self.assertEqual(roles, {"主编", "副主编"})

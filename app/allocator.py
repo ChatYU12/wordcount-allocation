@@ -666,3 +666,240 @@ def optimize_order(
         "truncated": truncated,
     }
     return best
+
+
+def allocate_under_bound(
+    units: List[Dict],
+    people: List[Dict],
+    under_bound: float = 0.10,
+    over_cap: float = 1.5,
+    allowed_pairs: Optional[List[List[str]]] = None,
+    boundary_penalty: float = 0.02,
+) -> Dict:
+    """单边优化：只约束欠额，超额只要不超过 over_cap 就接受。
+
+    业务场景：某人写多了没关系（多写就是多写），但写不够会有交付问题。
+    在「总量 = 需求总量」时，欠额压得越低，超额就越大，两者此消彼长。
+    """
+    if allowed_pairs is None:
+        allowed_pairs = DEFAULT_PAIRS
+    people = [p for p in people if (p.get("target_words") or 0) > 0]
+    if not units or not people:
+        raise ValueError("缺少可分配的单元或人员")
+
+    n = len(units)
+    m = len(people)
+    prefix = [0]
+    for u in units:
+        prefix.append(prefix[-1] + (u.get("words") or 0))
+    proj_of = [u.get("project_no") for u in units]
+
+    # dp[t][i] = (k, kind) 表示前 t 个人覆盖前 i 个单元的最后一段
+    dp: List[List[Optional[tuple]]] = [[None] * (n + 1) for _ in range(m + 1)]
+    dp[0][0] = ("start",)
+    for t in range(1, m + 1):
+        p = people[t - 1]
+        target = p.get("target_words") or 0
+        for i in range(1, n + 1):
+            best = None
+            for k in range(i):
+                if dp[t - 1][k] is None:
+                    continue
+                w = prefix[i] - prefix[k]
+                r = (w - target) / target if target else 0.0
+                if -under_bound <= r <= over_cap:
+                    # 偏好项目边界切分
+                    pen = 0.0 if (k == 0 or proj_of[k] != proj_of[k - 1]) else boundary_penalty
+                    score = (pen, abs(r))
+                    if best is None or score < best[0]:
+                        best = (score, (k, "single", t - 1))
+            if best is not None:
+                dp[t][i] = best[1]
+                continue
+            if t >= 2 and _pair_allowed(people[t - 2], p, allowed_pairs):
+                tt = target + (people[t - 2].get("target_words") or 0)
+                for k in range(i):
+                    if dp[t - 2][k] is None:
+                        continue
+                    w = prefix[i] - prefix[k]
+                    r = (w - tt) / tt if tt else 0.0
+                    if -under_bound <= r <= over_cap:
+                        dp[t][i] = (k, "pair", t - 1)
+                        break
+
+    if dp[m][n] is None:
+        raise ValueError(
+            f"欠额不超过 {under_bound * 100:.0f}% 的方案不存在，请放宽限制"
+        )
+
+    raw = []
+    t, i = m, n
+    while t > 0:
+        k, kind, tp = dp[t][i]
+        raw.append((kind, tp, k, i))
+        t = t - 1 if kind == "single" else t - 2
+        i = k
+    raw.reverse()
+
+    segments = []
+    for kind, tp, k, i in raw:
+        members = [people[tp]] if kind == "single" else [people[tp - 1], people[tp]]
+        segments.append({
+            "members": members,
+            "unit_idx": list(range(k, i)),
+            "start": units[k]["start"],
+            "end": units[i - 1]["end"],
+            "pages": units[i - 1]["end"] - units[k]["start"] + 1,
+            "words": prefix[i] - prefix[k],
+            "cooperative": kind == "pair",
+        })
+
+    for idx, seg in enumerate(segments):
+        seg["order"] = idx + 1
+        seg["labels"] = [units[x]["label"] for x in seg["unit_idx"]]
+        seg["chapter_text"] = compress_chapter_text(seg["unit_idx"], units)
+        seg["project_nos"] = sorted(
+            {units[x]["project_no"] for x in seg["unit_idx"] if units[x].get("project_no")}
+        )
+        seg["target"] = sum(p["target_words"] for p in seg["members"])
+        seg["delta"] = seg["words"] - seg["target"]
+        seg["delta_ratio"] = seg["delta"] / seg["target"] if seg["target"] else 0.0
+        seg["within_tolerance"] = seg["delta_ratio"] >= -under_bound
+        seg["cross_project"] = len(seg["project_nos"]) > 1
+        seg["figure_pages"] = sum(units[x].get("figure_pages", 0) for x in seg["unit_idx"])
+        seg["shares"] = split_segment_words(seg["members"], seg["words"])
+        seg["assignments"] = (
+            split_cooperative_assignment(seg["unit_idx"], units, seg["members"])
+            if seg["cooperative"] else None
+        )
+
+    total_words = prefix[n]
+    total_target = sum(p.get("target_words") or 0 for p in people)
+    seg_under = min((s["delta_ratio"] for s in segments), default=0.0)
+    seg_over = max((s["delta_ratio"] for s in segments), default=0.0)
+    result = {
+        "segments": segments,
+        "total_words": total_words,
+        "total_target": total_target,
+        "gap": total_words - total_target,
+        "tolerance": under_bound,
+        "under_bound": under_bound,
+        "max_under": seg_under,
+        "max_over": seg_over,
+        "mode": "under_bound",
+        "warnings": [],
+        "solved_units": n,
+        "people_count": m,
+    }
+    result["warnings"] = _build_warnings(segments, people, under_bound, total_words, total_target)
+    result["warnings"].append(
+        f"按「允许超额」口径：最大欠额 {seg_under * 100:+.1f}%，最大超额 {seg_over * 100:+.1f}%。"
+    )
+    return result
+
+
+def best_under_bound(
+    units: List[Dict],
+    people: List[Dict],
+    min_bound: float = 0.01,
+    max_bound: float = 0.30,
+    over_cap: float = 1.5,
+) -> Dict:
+    """二分出「能把最大欠额压到多小」，并返回该口径下的方案。"""
+    lo, hi = min_bound, max_bound
+    best = None
+    for _ in range(14):
+        mid = (lo + hi) / 2
+        try:
+            res = allocate_under_bound(units, people, under_bound=mid, over_cap=over_cap)
+            best = res
+            hi = mid
+        except Exception:  # noqa: BLE001
+            lo = mid
+        if hi - lo < 0.002:
+            break
+    if best is None:
+        raise ValueError("无法在给定范围内找到可行方案")
+    return best
+
+
+def optimize_under_bound(
+    units: List[Dict],
+    people: List[Dict],
+    over_cap: float = 2.0,
+    max_orders: int = 3000,
+    ladder: Optional[List[float]] = None,
+) -> Dict:
+    """搜索「欠额最小」的名单顺序与方案。
+
+    从紧到松逐级试探欠额上限：某个上限下第一个有解的顺序，就是该上限下的最优。
+    这样能避免「上限放宽后 DP 反而选出欠额更大的解」。
+    """
+    workable = [p for p in people if (p.get("target_words") or 0) > 0]
+    if len(workable) < 2:
+        raise ValueError("至少需要两位有字数的编写人")
+
+    groups = _group_people(workable)
+    orders = _multiset_orders(groups)
+    if len(orders) > max_orders:
+        step = len(orders) / max_orders
+        orders = [orders[int(i * step)] for i in range(max_orders)]
+
+    if ladder is None:
+        ladder = [0.04, 0.05, 0.06, 0.07, 0.08, 0.09, 0.10, 0.12, 0.15]
+
+    best = None
+    best_order: Optional[List[Dict]] = None
+    hit_bound = None
+    for ub in ladder:
+        hits: List[tuple] = []
+        for seq in orders:
+            picks = [0] * len(groups)
+            candidate: List[Dict] = []
+            for gi in seq:
+                candidate.append(groups[gi][1][picks[gi]])
+                picks[gi] += 1
+            try:
+                res = allocate_under_bound(
+                    units, candidate, under_bound=ub, over_cap=over_cap
+                )
+            except Exception:  # noqa: BLE001
+                continue
+            hits.append((res["max_under"], -res["max_over"], res, candidate))
+        if hits:
+            # 欠额越接近 0 越好；同等情况选超额小的
+            hits.sort(key=lambda x: (-x[0], -x[1]))
+            best = hits[0][2]
+            best_order = hits[0][3]
+            hit_bound = ub
+            break
+
+    if best is None or best_order is None:
+        raise ValueError(
+            "在合理范围内找不到可行方案：请放宽允许偏差，或调整名单/制度字数"
+        )
+
+    # 在该顺序上二分收紧
+    lo = max(0.005, hit_bound - 0.02)
+    hi = hit_bound
+    refined = best
+    for _ in range(10):
+        mid = (lo + hi) / 2
+        try:
+            r = allocate_under_bound(units, best_order, under_bound=mid, over_cap=over_cap)
+            refined = r
+            hi = mid
+        except Exception:  # noqa: BLE001
+            lo = mid
+        if hi - lo < 0.003:
+            break
+
+    refined["optimized"] = {
+        "order": [
+            {"name": p["name"], "role": p["role"], "target_words": p["target_words"]}
+            for p in best_order
+        ],
+        "searched": len(orders),
+        "truncated": len(orders) >= max_orders,
+    }
+    return refined

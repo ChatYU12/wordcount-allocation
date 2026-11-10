@@ -493,6 +493,7 @@ function payload(extra = {}) {
     per_page_words: perPageWords(),
     tolerance: parseFloat($('#tol').value) / 100,
     calibrate: state.mode === 'target',
+    allow_over: $('#allowOver') ? $('#allowOver').checked : false,
     total_words: state.mode === 'total' ? (parseInt($('#totalWords').value, 10) || 0) : null,
     use_figure_discount: $('#figureDiscount') ? $('#figureDiscount').checked : true,
     hours_per_1000: parseFloat($('#hoursPerK') ? $('#hoursPerK').value : '1') || 0,
@@ -612,13 +613,22 @@ function renderResult() {
     banners.appendChild(d);
   };
 
-  const bound = (r.best_bound * 100).toFixed(1);
   // 偏差降不下去的诊断
   (r.diagnosis || []).forEach((line) => add('warn', '!', escapeAttr(line)));
-  if (r.within_declared_tolerance) {
-    add('good', '✓', `全部 ${r.segments.length} 段都控制在 ±${(r.tolerance * 100).toFixed(0)}% 容差内（本书客观最小偏差 ±${bound}%）。`);
+
+  if (r.mode === 'under_bound') {
+    const mu = ((r.max_under || 0) * 100).toFixed(1);
+    const mo = ((r.max_over || 0) * 100).toFixed(1);
+    add('good', '✓',
+      `按「允许超额」口径生成：最大欠额 ${mu}%（没人少写超过这个幅度），最大超额 +${mo}%。` +
+      `多写的部分按实际字数认定，不影响交付。`);
   } else {
-    add('warn', '!', `本书在「任务不拆分」前提下，客观可达到的最小偏差是 ±${bound}%，你设定的 ±${(r.tolerance * 100).toFixed(0)}% 无法满足；方案已按最小偏差生成。`);
+    const bound = (r.best_bound * 100).toFixed(1);
+    if (r.within_declared_tolerance) {
+      add('good', '✓', `全部 ${r.segments.length} 段都控制在 ±${(r.tolerance * 100).toFixed(0)}% 容差内（本书客观最小偏差 ±${bound}%）。`);
+    } else {
+      add('warn', '!', `本书在「任务不拆分」前提下，客观可达到的最小偏差是 ±${bound}%，你设定的 ±${(r.tolerance * 100).toFixed(0)}% 无法满足；方案已按最小偏差生成。`);
+    }
   }
 
   const gap = r.total_words - r.total_target;
@@ -704,17 +714,19 @@ function bindOptimizeOrder() {
       state.people = order.map((o) => byName.get(o.name) || o);
       renderPeople();
       updateStats();
-      const b = (data.best_bound * 100).toFixed(2);
+      const b = data.mode === 'under_bound'
+        ? `欠额 ${(data.max_under * 100).toFixed(1)}% / 超额 ${(data.max_over * 100).toFixed(1)}%`
+        : `±${(data.best_bound * 100).toFixed(2)}%`;
       clearResultPanel();
       state.result = data;
       renderResult();
       $('#exportBtn').disabled = false;
       $('#copyBtn').disabled = false;
       showPolicyNote(
-        `已搜索 ${data.optimized.searched} 种名单顺序，最优偏差 ±${b}%。` +
+        `已搜索 ${data.optimized.searched} 种名单顺序，最优结果 ${b}。` +
         `顺序已自动调整为：${order.map((o) => o.name).join(' → ')}`
       );
-      toast(`已优化：偏差 ±${b}%（搜索 ${data.optimized.searched} 种顺序）`);
+      toast(`已优化：${b}（搜索 ${data.optimized.searched} 种顺序）`);
     } catch (err) {
       toast('优化失败：' + err.message);
     } finally {
