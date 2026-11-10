@@ -52,6 +52,19 @@ def _cjk_count(text: str) -> int:
     return len(CJK_RE.findall(text))
 
 
+def clean_title(s: str) -> str:
+    """清掉目录标题里拖着的引导符和页码残渣。
+
+    有些书稿的目录写成「项目一 职业认知… …………………………… /1」，
+    页码提取后标题会残留省略号和斜杠，这里统一收尾。
+    """
+    s = re.sub(r"[…⋯]+", " ", s)                 # 省略号引导符
+    s = re.sub(r"\s*[/\\]+\s*$", "", s)          # 尾部斜杠
+    s = re.sub(r"(\s*[.．·・]\s*){2,}$", "", s)     # 尾部连续点线
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
 def classify(title: str) -> str:
     t = _norm(title)
     if RE_MODULE.match(t):
@@ -125,7 +138,7 @@ def parse_toc_text(lines: List[str]) -> List[Dict]:
             if page is not None:
                 nodes.append(
                     {
-                        "title": line,
+                        "title": clean_title(line),
                         "kind": kind,
                         "book_page": page,
                         "level": _level_of(kind),

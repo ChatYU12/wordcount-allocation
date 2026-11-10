@@ -127,6 +127,8 @@ def allocate(
         allowed_pairs = DEFAULT_PAIRS
     if not units:
         raise ValueError("没有可分配的单元")
+    # 目标字数为 0 的人不承担编写，不占章节（参编在余量不足时就是这种情况）
+    people = [p for p in people if (p.get("target_words") or 0) > 0]
     if not people:
         raise ValueError("没有编写人员")
 

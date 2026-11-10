@@ -509,3 +509,159 @@ class TestAuthorDetection(unittest.TestCase):
         self.assertEqual(_norm_author_role("副主编"), "副主编")
         self.assertEqual(_norm_author_role("主编"), "主编")
         self.assertEqual(_norm_author_role("编委"), "参编")
+
+
+class TestCoverParser(unittest.TestCase):
+    """扉页版式还原与名单解析（不依赖 OCR）。"""
+
+    def setUp(self):
+        import sys
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
+        from cover_parser import parse_rows
+        self.parse_rows = parse_rows
+
+    def test_standard_layout(self):
+        rows = [
+            ["老年健康评估"],
+            ["主审", "杨晔琴"],
+            ["总主编", "左春雨"],
+            ["主编", "王春桃", "龚建光", "任兰梅"],
+            ["副主编", "朱娟", "王静", "潘菲菲"],
+            ["赵莉萍", "贾华华", "田莉萍"],          # 续行
+            ["参编", "刘洋", "孙玲玲"],
+            ["陈志朋", "周丽华", "杨丽"],            # 参编续行
+        ]
+        r = self.parse_rows(rows)
+        self.assertEqual(r["title"], "老年健康评估")
+        self.assertEqual(len(r["authors"]), 16)
+        roles = {a["name"]: a["role"] for a in r["authors"]}
+        self.assertEqual(roles["杨晔琴"], "主审")
+        self.assertEqual(roles["左春雨"], "总主编")
+        self.assertEqual(roles["任兰梅"], "主编")
+        self.assertEqual(roles["田莉萍"], "副主编")   # 续行要继承角色
+        self.assertEqual(roles["杨丽"], "参编")
+
+    def test_duplicate_role_means_ocr_lost_a_char(self):
+        """「副主编」被 OCR 成「主编」时，应按降级处理并给出提示。"""
+        rows = [
+            ["主编", "王春桃"],
+            ["主编", "朱娟"],      # 实际是「副主编」，漏了「副」
+            ["参编", "刘洋"],
+        ]
+        r = self.parse_rows(rows)
+        roles = {a["name"]: a["role"] for a in r["authors"]}
+        self.assertEqual(roles["王春桃"], "主编")
+        self.assertEqual(roles["朱娟"], "副主编")
+        self.assertTrue(any("重复出现" in w for w in r["warnings"]))
+
+    def test_merged_role_and_name(self):
+        """角色词与姓名黏在一格时要能拆开。"""
+        rows = [["主审赵一鸣"], ["主编孙三峰"], ["参编郑七弦"]]
+        r = self.parse_rows(rows)
+        roles = {a["name"]: a["role"] for a in r["authors"]}
+        self.assertEqual(roles.get("赵一鸣"), "主审")
+        self.assertEqual(roles.get("孙三峰"), "主编")
+        self.assertEqual(roles.get("郑七弦"), "参编")
+
+    def test_role_tokens_split_into_chars(self):
+        """角色词被拆成单字时要能合回去。"""
+        rows = [["参", "编", "郑七弦", "王八斗"]]
+        r = self.parse_rows(rows)
+        roles = {a["name"]: a["role"] for a in r["authors"]}
+        self.assertEqual(roles.get("郑七弦"), "参编")
+        self.assertEqual(roles.get("王八斗"), "参编")
+
+    def test_name_with_inner_space(self):
+        """「杨 丽」是姓名内空格，不能拆成两个人。"""
+        from cover_parser import expand_row
+        self.assertEqual(expand_row(["杨 丽"]), ["杨丽"])
+        self.assertEqual(expand_row(["周五湖 吴六桥"]), ["周五湖", "吴六桥"])
+
+    def test_audit_typo(self):
+        """「主审」被识成形近字也要认出来。"""
+        from cover_parser import match_role
+        self.assertEqual(match_role("主审"), "主审")
+        self.assertEqual(match_role("主車"), "主审")
+        self.assertIsNone(match_role("主任"))     # 不是角色
+        self.assertIsNone(match_role("张三"))
+
+
+class TestCompanyPolicy(unittest.TestCase):
+    """公司字数制度。"""
+
+    def setUp(self):
+        import sys
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
+        from policy import apply_member_fill, build_initial_people, suggest_members
+        self.build = build_initial_people
+        self.suggest = suggest_members
+        self.fill = apply_member_fill
+
+    def _authors(self):
+        return [
+            {"name": "赵一鸣", "role": "主审"},
+            {"name": "钱二山", "role": "总主编"},
+            {"name": "孙三峰", "role": "主编"},
+            {"name": "李四海", "role": "主编"},
+            {"name": "周小五", "role": "主编"},
+            {"name": "吴六桥", "role": "副主编"},
+            {"name": "郑七弦", "role": "参编"},
+        ]
+
+    def test_chief_tiers(self):
+        b = self.build(self._authors())
+        words = {p["name"]: p["target_words"] for p in b["people"]}
+        self.assertEqual(words["孙三峰"], 60000)   # 第一主编
+        self.assertEqual(words["李四海"], 50000)   # 第二主编
+        self.assertEqual(words["周小五"], 30000)   # 第三主编
+        self.assertEqual(words["吴六桥"], 20000)   # 副主编
+        self.assertEqual(words["郑七弦"], 0)       # 参编默认 0
+
+    def test_non_writing_roles_skipped(self):
+        b = self.build(self._authors())
+        names = [p["name"] for p in b["people"]]
+        self.assertNotIn("赵一鸣", names)          # 主审
+        self.assertNotIn("钱二山", names)          # 总主编
+        self.assertEqual(len(b["skipped"]), 2)
+
+    def test_policy_total(self):
+        b = self.build(self._authors())
+        self.assertEqual(b["policy_total"], 60000 + 50000 + 30000 + 20000)
+
+    def test_fourth_chief_uses_floor(self):
+        authors = [{"name": f"主编{i}", "role": "主编"} for i in range(4)]
+        b = self.build(authors)
+        self.assertEqual([p["target_words"] for p in b["people"]],
+                         [60000, 50000, 30000, 30000])
+
+    def test_member_fill_when_enough(self):
+        b = self.build(self._authors())
+        s = self.suggest(b["people"], 200000)
+        self.assertEqual(s["can_fill"], 1)
+        filled = self.fill(b["people"], s["can_fill"])
+        self.assertEqual(sum(p["target_words"] for p in filled), 160000 + 10000)
+
+    def test_member_not_filled_when_tight(self):
+        b = self.build(self._authors())
+        s = self.suggest(b["people"], 165000)      # 只余 5 千
+        self.assertEqual(s["can_fill"], 0)
+        filled = self.fill(b["people"], 0)
+        self.assertEqual(sum(p["target_words"] for p in filled), 160000)
+
+
+class TestCoverOcr(unittest.TestCase):
+    """真实 OCR 端到端（仅 macOS + Vision 可用时执行）。"""
+
+    def test_ocr_sample_cover(self):
+        import platform
+        import sys
+        if platform.system() != "Darwin":
+            self.skipTest("Vision OCR 仅在 macOS 可用")
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
+        from cover_parser import _ensure_ocr_binary, cluster_rows, ocr_image
+        if not _ensure_ocr_binary() and not os.path.exists(os.path.join(
+                os.path.dirname(__file__), "..", "app", "bin", "ocr.swift")):
+            self.skipTest("缺少 OCR 组件")
+        # 只验证 OCR 通道可用，不绑定具体图片
+        self.assertTrue(callable(ocr_image))
+        self.assertTrue(callable(cluster_rows))

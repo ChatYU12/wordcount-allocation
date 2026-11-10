@@ -120,6 +120,7 @@ function syncWordInputs() {
 
 /* ---------------- 统计条 ---------------- */
 function updateStats() {
+  refreshMemberHint();
   const pages = totalPages();
   const words = computeTotalWords();
   const target = totalTarget();
@@ -381,7 +382,15 @@ async function uploadPdf(file) {
     }
     state.bookTitle = (data.filename || '').replace(/\.pdf$/i, '');
     state.units = data.units.map((u) => ({ ...u }));
-    const authorNote = applyDetectedAuthors(data.authors);
+    const authorNote = data.cover_people && data.cover_people.length
+      ? applyCoverResult({
+          people: data.cover_people,
+          skipped: data.cover_skipped || [],
+          policy: data.cover_policy || {},
+          warnings: [],
+          title: '',
+        }, { silent: true })
+      : applyDetectedAuthors(data.authors);
     recomputeWords(); syncWordInputs();
     renderUnits();
     updateStats();
@@ -628,6 +637,140 @@ function clearResultPanel() {
   });
 }
 
+/* ---------------- 上传扉页，自动识别名单 ---------------- */
+function bindCoverUpload() {
+  const btn = $('#coverBtn');
+  const input = $('#coverFile');
+  if (!btn || !input) return;
+  btn.addEventListener('click', () => input.click());
+  input.addEventListener('change', async (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    const label = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = '识别中…';
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+      const resp = await fetch('/api/parse-cover', { method: 'POST', body: fd });
+      const data = await resp.json();
+      if (!data.ok) {
+        toast(data.error || '扉页识别失败');
+        return;
+      }
+      applyCoverResult(data);
+    } catch (err) {
+      toast('扉页识别失败：' + err.message);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = label;
+      input.value = '';
+    }
+  });
+}
+
+/* 把扉页识别结果落到名单表，并说明制度口径 */
+function applyCoverResult(data, opts) {
+  const silent = !!(opts && opts.silent);
+  state.people = data.people.map((p) => ({ ...p, allow_pair: p.allow_pair !== false }));
+  if (data.title) state.bookTitle = data.title;
+  clearResultPanel();
+  renderPeople();
+  updateStats();
+
+  const pol = data.policy || {};
+  const skipped = (data.skipped || []).map((s) => `${s.role}${s.name}`);
+  const parts = [
+    `已识别 ${data.people.length} 位编写人，按制度填入 ${(pol.total || 0).toLocaleString()} 字`,
+  ];
+  const chiefs = data.people.filter((p) => p.role === '主编').length;
+  const vices = data.people.filter((p) => p.role === '副主编').length;
+  const members = data.people.filter((p) => p.role === '参编').length;
+  if (chiefs) parts.push(`主编 ${chiefs} 位 6/5/3 万`);
+  if (vices) parts.push(`副主编 ${vices} 位各 2 万`);
+  if (members) parts.push(`参编 ${members} 位暂记 0（等全书字数出来后再看余量）`);
+  if (skipped.length) parts.push(`${skipped.join('、')} 只署名不分配`);
+
+  const warn = (data.warnings || []).join('；');
+  const msg = parts.join('，') + '。' + (warn ? '注意：' + warn + '。' : '');
+  showPolicyNote(msg);
+  if (!silent) {
+    toast(msg.length > 90 ? msg.slice(0, 90) + '…' : msg);
+  }
+  return msg;
+}
+
+/* 名单区的制度说明条 */
+function showPolicyNote(text) {
+  let box = $('#policyNote');
+  if (!box) {
+    box = document.createElement('p');
+    box.id = 'policyNote';
+    box.className = 'parse-note ok';
+    box.style.margin = '10px 0 0';
+    const card = $('#cardPeople');
+    if (card) card.appendChild(box);
+  }
+  box.textContent = text;
+  box.style.display = text ? '' : 'none';
+}
+
+/* 全书字数已知时，测算还能给几位参编各分 1 万 */
+function refreshMemberHint() {
+  const box = $('#policyNote');
+  if (!box) return;
+  const pending = state.people.filter((p) => p.role === '参编' && !p.target_words);
+  if (!pending.length) return;
+  if (!state.units.length) {
+    showPolicyNote('参编暂记 0 字：等书稿页数确定后，会自动算出能给几位参编各分 1 万。');
+    return;
+  }
+  const total = computeTotalWords();
+  const need = totalTarget();
+  const gap = total - need;
+  const each = 10000;
+  const canFill = Math.max(0, Math.min(pending.length, Math.floor(gap / each)));
+  if (canFill <= 0) {
+    showPolicyNote(
+      `全书可分配 ${fmt(total)} 字，名单需求 ${fmt(need)} 字，余 ${fmt(gap)} 字，` +
+      `不够给参编各分 1 万，${pending.length} 位参编不分配。`
+    );
+    return;
+  }
+  const rest = pending.length - canFill;
+  const text =
+    `全书可分配 ${fmt(total)} 字，名单需求 ${fmt(need)} 字，余 ${fmt(gap)} 字：` +
+    `可给前 ${canFill} 位参编各 1 万元` +
+    (rest ? `，其余 ${rest} 位不分配` : '') +
+    '。';
+  showPolicyNote(text);
+  let act = $('#memberFillBtn');
+  if (!act) {
+    act = document.createElement('button');
+    act.id = 'memberFillBtn';
+    act.className = 'btn sm';
+    act.style.marginLeft = '10px';
+    act.addEventListener('click', () => {
+      const n = parseInt(act.dataset.n || '0', 10);
+      let used = 0;
+      state.people = state.people.map((p) => {
+        if (p.role === '参编' && !p.target_words && used < n) {
+          used += 1;
+          return { ...p, target_words: 10000 };
+        }
+        return p;
+      });
+      renderPeople();
+      updateStats();
+      toast(`已给前 ${used} 位参编各分配 1 万字`);
+    });
+    box.appendChild(act);
+  }
+  act.dataset.n = String(canFill);
+  act.textContent = `给前 ${canFill} 位参编各分 1 万`;
+  act.style.display = '';
+}
+
 function bindPeopleImport() {
   const btn = $('#importPeople');
   const input = $('#peopleFile');
@@ -666,6 +809,7 @@ function bindPeopleImport() {
       }
     });
   }
+  bindCoverUpload();
   const tpl = $('#templateBtn');
   if (tpl) {
     tpl.addEventListener('click', () => { window.location.href = '/api/people-template'; });

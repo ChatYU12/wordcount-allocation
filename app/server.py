@@ -28,6 +28,8 @@ from allocator import allocate_best, distribute_words, infer_per_page_words, res
 from excel_export import build_workbook  # noqa: E402
 from pdf_parser import parse_book  # noqa: E402
 from people_import import build_people_template, parse_people_csv, parse_people_xlsx  # noqa: E402
+from cover_parser import IMAGE_EXTS, parse_cover  # noqa: E402
+from policy import build_initial_people, suggest_members  # noqa: E402
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
@@ -201,6 +203,55 @@ def people_template() -> StreamingResponse:
     )
 
 
+@app.post("/api/parse-cover")
+async def parse_cover_file(file: UploadFile = File(...)) -> JSONResponse:
+    """识别扉页上的编写名单，并按公司制度给出初版字数。"""
+    name = (file.filename or "").lower()
+    if not name.endswith((".pdf",) + IMAGE_EXTS):
+        raise HTTPException(400, "请上传扉页图片（png/jpg/heic）或包含扉页的 PDF")
+    data = await file.read()
+    if len(data) > 60 * 1024 * 1024:
+        raise HTTPException(400, "文件过大（>60MB）")
+
+    suffix = os.path.splitext(name)[1] or ".png"
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+    try:
+        tmp.write(data)
+        tmp.close()
+        result = parse_cover(tmp.name, filename=file.filename or "")
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(500, f"扉页识别失败：{exc}") from exc
+    finally:
+        try:
+            os.unlink(tmp.name)
+        except OSError:
+            pass
+
+    result["filename"] = file.filename
+    if not result.get("ok"):
+        return JSONResponse(result)
+
+    built = build_initial_people(result["authors"])
+    result["people"] = built["people"]
+    result["skipped"] = built["skipped"]
+    result["policy"] = {
+        "total": built["policy_total"],
+        "member_pool": built["member_pool"],
+        "member_words_each": built["member_words_each"],
+        "chief_tiers": [60000, 50000, 30000],
+        "vice_words": 20000,
+    }
+    return JSONResponse(result)
+
+
+@app.post("/api/member-suggest")
+def member_suggest(req: Dict) -> JSONResponse:
+    """已知全书字数时，算出能给多少参编各分 1 万。"""
+    people = req.get("people") or []
+    total = req.get("total_words")
+    return JSONResponse(suggest_members(people, total))
+
+
 @app.post("/api/import-people")
 async def import_people(file: UploadFile = File(...)) -> JSONResponse:
     """从 Excel / CSV 导入编写名单。"""
@@ -247,6 +298,17 @@ async def parse_pdf(
         result = parse_book(tmp.name, per_page_words=per_page_words, include_ref=include_ref)
         result["elapsed_ms"] = int((time.time() - t0) * 1000)
         result["filename"] = file.filename
+        # 若书稿自带扉页，一并按公司制度给出初版名单
+        authors = result.get("authors") or []
+        if authors:
+            built = build_initial_people(authors)
+            result["cover_people"] = built["people"]
+            result["cover_skipped"] = built["skipped"]
+            result["cover_policy"] = {
+                "total": built["policy_total"],
+                "member_pool": built["member_pool"],
+                "member_words_each": built["member_words_each"],
+            }
         return JSONResponse(result)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(500, f"解析失败：{exc}") from exc
@@ -295,6 +357,21 @@ def allocate(req: AllocateRequest) -> JSONResponse:
 
     res["per_page_words"] = ppw
     res["hours_per_1000"] = req.hours_per_1000
+
+    # 目标为 0 的人（多为余量不足的参编）不参与分配，明确告知
+    zero_people = [p["name"] for p in people if (p.get("target_words") or 0) <= 0]
+    if zero_people:
+        notes.append(
+            f"{'、'.join(zero_people)} 的目标字数为 0，不承担编写，未参与本次分配。"
+        )
+    # 大单元导致的粒度限制
+    if scaled:
+        biggest = max(scaled, key=lambda u: u["pages"])
+        if biggest["pages"] >= sum(u["pages"] for u in scaled) * 0.15:
+            notes.append(
+                f"「{biggest['label']}」单个任务就有 {biggest['pages']} 页，"
+                f"任务不可拆时它就是不可分割的一整块，会限制整体精度。"
+            )
     for seg in res["segments"]:
         seg["hours"] = round(seg["words"] / 1000.0 * req.hours_per_1000, 1) if req.hours_per_1000 > 0 else 0
     res["notes"] = notes
