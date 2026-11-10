@@ -388,6 +388,9 @@ async function uploadPdf(file) {
   fd.append('file', file);
   fd.append('per_page_words', String(perPageWords()));
   fd.append('include_ref', String($('#includeRef').checked));
+  const splitChk = $('#splitSections');
+  fd.append('split_sections', String(splitChk ? splitChk.checked : false));
+  fd.append('min_section_pages', '1');
 
   const t0 = performance.now();
   try {

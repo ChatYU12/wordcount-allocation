@@ -239,6 +239,68 @@ def estimate_offset(
 
 # ---------- 构建可分配单元 ----------
 
+RE_SECTION_HEAD = re.compile(r"^[一二三四五六七八九十]+、\S")
+
+
+def detect_section_pages(
+    doc: "fitz.Document",
+    offset: int,
+    start: int,
+    end: int,
+    texts: Optional[List[str]] = None,
+) -> List[tuple]:
+    """找出正文区间内带一级分节标题（「一、」「二、」…）的书页。
+
+    这些页可作为更细的切分点：任务级不可拆时偏差往往很大，
+    拆到分节级能把偏差压下来，而分节（一、二、三）在业务上仍是一个完整单元。
+    """
+    pages: List[tuple] = []
+    for book_p in range(start, end + 1):
+        pi = book_p + offset
+        if not (0 <= pi < doc.page_count):
+            continue
+        try:
+            text = texts[pi] if texts is not None else doc[pi].get_text()
+        except Exception:  # noqa: BLE001
+            continue
+        if not text:
+            continue
+        for line in text.splitlines():
+            head = line.strip()
+            if RE_SECTION_HEAD.match(head):
+                pages.append((book_p, head[:24]))
+                break
+    return pages
+
+
+def _split_by_sections(
+    unit: Dict, section_pages: List[tuple], min_pages: int
+) -> List[Dict]:
+    """把一个单元按分节切成若干小单元；相邻切点距离不足 min_pages 时跳过。"""
+    start, end = unit["_start"], unit["_end"]
+    cuts: List[int] = [start]
+    titles: List[str] = [""]
+    last = start
+    for p, title in section_pages:
+        if start < p <= end and p - last >= min_pages:
+            cuts.append(p)
+            titles.append(title)
+            last = p
+    if len(cuts) == 1:
+        return [unit]
+    cuts.append(end + 1)
+    out: List[Dict] = []
+    for i, (a, b) in enumerate(zip(cuts, cuts[1:])):
+        if b - a <= 0:
+            continue
+        v = dict(unit)
+        v["_start"] = a
+        v["_end"] = b - 1
+        v["_section_label"] = titles[i] if i < len(titles) and titles[i] else f"{a}-{b-1}页"
+        out.append(v)
+    return out or [unit]
+
+
 def detect_figure_pages(
     doc: "fitz.Document",
     offset: int,
@@ -396,6 +458,8 @@ def build_units(
     include_ref: bool = False,
     figure_discount: float = 0.2,
     texts: Optional[List[str]] = None,
+    split_sections: bool = False,
+    min_section_pages: int = 1,
 ) -> List[Dict]:
     """把节点合并成「不可再拆」的分配单元。
 
@@ -458,6 +522,21 @@ def build_units(
             continue
         merged.append(u)
 
+    # 3.5) 可选：把任务按一级分节再切开，换取更小的分配偏差
+    if split_sections and merged:
+        first = min(u["_start"] for u in merged)
+        last = max(u["_end"] for u in merged)
+        sec_pages = detect_section_pages(doc, offset, first, last, texts=texts)
+        if sec_pages:
+            expanded: List[Dict] = []
+            for u in merged:
+                base_label = u.get("label") or _unit_label(u)
+                for piece in _split_by_sections(u, sec_pages, max(1, min_section_pages)):
+                    if piece.get("_section_label"):
+                        piece["label"] = f"{base_label}（{piece['_section_label']}）"
+                    expanded.append(piece)
+            merged = expanded
+
     # 4) 补齐页数/字数，生成展示用名称
     for idx, u in enumerate(merged):
         u["start"], u["end"] = u["_start"], u["_end"]
@@ -471,7 +550,8 @@ def build_units(
         u["weight"] = max(0.0, u["pages"] - u["figure_pages"] * (1 - figure_discount))
         u["words"] = int(round(u["weight"] * per_page_words))
         u["index"] = idx
-        u["label"] = _unit_label(u)
+        # 已按分节切开的小块保留带分节标题的名称，不要被通用名称覆盖
+        u["label"] = u.get("label") or _unit_label(u)
     return merged
 
 
@@ -526,6 +606,8 @@ def parse_book(
     toc_pages: Optional[List[int]] = None,
     offset: Optional[int] = None,
     figure_discount: float = 0.2,
+    split_sections: bool = False,
+    min_section_pages: int = 1,
 ) -> Dict:
     """解析整本书，返回结构化结果（可直接交给前端编辑）。"""
     doc = fitz.open(pdf_path)
@@ -557,6 +639,7 @@ def parse_book(
     units = build_units(
         nodes, off, doc, per_page_words=per_page_words,
         include_ref=include_ref, figure_discount=figure_discount, texts=texts,
+        split_sections=split_sections, min_section_pages=min_section_pages,
     )
     measure_real_chars(doc, units, off, texts=texts)
     authors = detect_authors(doc)

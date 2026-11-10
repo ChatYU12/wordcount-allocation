@@ -665,3 +665,41 @@ class TestCoverOcr(unittest.TestCase):
         # 只验证 OCR 通道可用，不绑定具体图片
         self.assertTrue(callable(ocr_image))
         self.assertTrue(callable(cluster_rows))
+
+
+class TestSectionSplit(unittest.TestCase):
+    """按一级分节（一、二、三）再拆分任务。"""
+
+    def test_split_reduces_unit_size(self):
+        import sys
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
+        from pdf_parser import parse_book
+        path = os.path.join(os.path.dirname(__file__), "..", "data",
+                            "0601终稿-老年人能力评估实务.pdf")
+        if not os.path.exists(path):
+            self.skipTest("示例书未随仓库分发")
+        plain = parse_book(path)
+        split = parse_book(path, split_sections=True, min_section_pages=1)
+        self.assertGreater(len(split["units"]), len(plain["units"]))
+        # 页数守恒
+        self.assertEqual(sum(u["pages"] for u in split["units"]),
+                         sum(u["pages"] for u in plain["units"]))
+        # 最大单元变小
+        self.assertLess(max(u["pages"] for u in split["units"]),
+                        max(u["pages"] for u in plain["units"]))
+
+    def test_split_labels_keep_section_title(self):
+        import sys
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
+        from pdf_parser import parse_book
+        path = os.path.join(os.path.dirname(__file__), "..", "data",
+                            "0601终稿-老年人能力评估实务.pdf")
+        if not os.path.exists(path):
+            self.skipTest("示例书未随仓库分发")
+        res = parse_book(path, split_sections=True, min_section_pages=1)
+        # 切出来的小块应带上分节标题或页码范围，而不是全都同名
+        labels = [u["label"] for u in res["units"]]
+        # 至少有一条 label 带出了分节标题（如「任务一 …（一、准备工作）」）
+        self.assertTrue(any("、" in x for x in labels), "没有一条 label 带上分节标题")
+        # 每个单元都有 label，且互不重复到无法区分（用页码兜底）
+        self.assertTrue(all(x for x in labels))

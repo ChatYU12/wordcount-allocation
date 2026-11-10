@@ -283,6 +283,8 @@ async def parse_pdf(
     file: UploadFile = File(...),
     per_page_words: int = Form(1200),
     include_ref: bool = Form(False),
+    split_sections: bool = Form(False),
+    min_section_pages: int = Form(1),
 ) -> JSONResponse:
     if not file.filename or not file.filename.lower().endswith(".pdf"):
         raise HTTPException(400, "请上传 PDF 文件")
@@ -295,7 +297,10 @@ async def parse_pdf(
         tmp.write(data)
         tmp.close()
         t0 = time.time()
-        result = parse_book(tmp.name, per_page_words=per_page_words, include_ref=include_ref)
+        result = parse_book(
+            tmp.name, per_page_words=per_page_words, include_ref=include_ref,
+            split_sections=split_sections, min_section_pages=min_section_pages,
+        )
         result["elapsed_ms"] = int((time.time() - t0) * 1000)
         result["filename"] = file.filename
         # 若书稿自带扉页，一并按公司制度给出初版名单
