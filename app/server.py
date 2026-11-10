@@ -322,7 +322,10 @@ async def parse_pdf(
 
 @app.post("/api/allocate")
 def allocate(req: AllocateRequest) -> JSONResponse:
-    units = _prepare_units([u.model_dump() for u in req.units], req.use_figure_discount)
+    # 指定全书总字数时走「平均法」：字数 ÷ 正文页数 × 各单元页数，
+    # 此时不做事图折减，保证每一页的字数完全相同。
+    by_average = bool(req.total_words and req.total_words > 0) or req.calibrate
+    units = _prepare_units([u.model_dump() for u in req.units], req.use_figure_discount and not by_average)
     people = [p.model_dump() for p in req.people]
     if not units or not people:
         raise HTTPException(400, "缺少单元或人员数据")
@@ -356,6 +359,21 @@ def allocate(req: AllocateRequest) -> JSONResponse:
         raise HTTPException(400, str(exc)) from exc
 
     res["per_page_words"] = ppw
+    # 正文页数不含参考文献等非正文部分
+    body_pages = sum(u["pages"] for u in units if u.get("kind") != "ref") or total_pages
+    res["body_pages"] = body_pages
+    res["total_pages_all"] = total_pages
+    res["by_average"] = by_average
+    if by_average:
+        base = req.total_words if (req.total_words and req.total_words > 0) else sum(
+            p["target_words"] for p in people
+        )
+        res["avg_words_per_page"] = round(base / body_pages, 1) if body_pages else 0
+        notes.append(
+            f"按平均法：全书 {base:,} 字 ÷ 正文 {body_pages} 页 = "
+            f"平均 {res['avg_words_per_page']} 字/页（不含目录、扉页、参考文献），"
+            f"各章节字数 = 页数 × 平均每页字数。"
+        )
     res["hours_per_1000"] = req.hours_per_1000
 
     # 目标为 0 的人（多为余量不足的参编）不参与分配，明确告知
@@ -383,7 +401,8 @@ def allocate(req: AllocateRequest) -> JSONResponse:
 
 @app.post("/api/export")
 def export(req: AllocateRequest) -> StreamingResponse:
-    units = _prepare_units([u.model_dump() for u in req.units], req.use_figure_discount)
+    by_average = bool(req.total_words and req.total_words > 0) or req.calibrate
+    units = _prepare_units([u.model_dump() for u in req.units], req.use_figure_discount and not by_average)
     people = [p.model_dump() for p in req.people]
     ppw = req.per_page_words
     total_pages = sum(u["pages"] for u in units) or 1

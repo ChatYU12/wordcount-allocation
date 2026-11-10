@@ -225,7 +225,48 @@ def build_workbook(
     _autosize(ws3, [6, 44, 26, 8, 8, 7, 8, 10, 18, 8])
     ws3.freeze_panes = "A2"
 
-    # ---------- Sheet 4：编写任务书 ----------
+    # ---------- Sheet 4：联合编写分工 ----------
+    coop_segs = [x for x in res["segments"] if x.get("assignments")]
+    ws_coop = wb.create_sheet("联合编写分工")
+    hc = ["段", "姓名", "角色", "负责章节", "起始页", "结束页", "页数",
+          "分配字数", "目标字数", "本段合计"]
+    ws_coop.append(hc)
+    _style_header(ws_coop, 1, len(hc))
+    if coop_segs:
+        for seg in coop_segs:
+            whole = (
+                f"第 {seg['order']} 段由 "
+                + " + ".join(m["name"] for m in seg["members"])
+                + f" 联合编写，共 {seg['pages']} 页 / {seg['words']:,} 字"
+            )
+            for a in seg["assignments"]:
+                ws_coop.append([
+                    seg["order"], a["name"], a["role"],
+                    a.get("chapter_text") or "；".join(a["labels"]),
+                    a["start"], a["end"], a["pages"], a["words"], a["target"], whole,
+                ])
+                r = ws_coop.max_row
+                for c in range(1, len(hc) + 1):
+                    cell = ws_coop.cell(row=r, column=c)
+                    cell.border = BORDER
+                    cell.alignment = Alignment(vertical="top", wrap_text=(c in (4, 10)))
+                    if c in (8, 9):
+                        cell.number_format = "#,##0"
+                # 每段合计行
+            tr = ws_coop.max_row + 1
+            ws_coop.cell(row=tr, column=1, value=f"{seg['order']} 段合计")
+            ws_coop.cell(row=tr, column=4, value=f"{len(seg['assignments'])} 人共同完成")
+            ws_coop.cell(row=tr, column=7, value=seg["pages"]).number_format = "#,##0"
+            ws_coop.cell(row=tr, column=8, value=seg["words"]).number_format = "#,##0"
+            for c in range(1, len(hc) + 1):
+                ws_coop.cell(row=tr, column=c).border = BORDER
+                ws_coop.cell(row=tr, column=c).font = Font(bold=True)
+    else:
+        ws_coop.append(["—", "—", "—", "本次分配没有联合编写的段落", "", "", "", "", "", ""])
+    _autosize(ws_coop, [6, 12, 10, 60, 8, 8, 7, 11, 11, 52])
+    ws_coop.freeze_panes = "A2"
+
+    # ---------- Sheet 5：编写任务书 ----------
     ws4 = wb.create_sheet("编写任务书")
     ws4.cell(row=1, column=1, value=f"《{book_title}》编写任务书").font = TITLE_FONT
     ws4.merge_cells(start_row=1, start_column=1, end_row=1, end_column=8)
@@ -282,13 +323,19 @@ def build_workbook(
     _autosize(ws4, [6, 20, 16, 44, 16, 26, 10, 16])
     ws4.freeze_panes = f"A{head_row + 1}"
 
-    # ---------- Sheet 5：计算说明 ----------
+    # ---------- Sheet 6：计算说明 ----------
     ws5 = wb.create_sheet("计算说明")
     lines = [
         ("生成时间", datetime.now().strftime("%Y-%m-%d %H:%M")),
-        ("字数口径", "版面字数 = 有效页数 × 每页字数；整页图按国标折减（见下）"),
+        ("字数口径",
+         "平均法：全书总字数 ÷ 正文页数 = 平均每页字数；各章节字数 = 该章节页数 × 平均每页字数。"
+         "目录、扉页、参考文献不计入正文。"),
         ("每页字数", per_page_words),
         ("全书可分配页数", sum(u["pages"] for u in units)),
+        ("正文页数（不含参考文献）",
+         res.get("body_pages") or sum(u["pages"] for u in units if u.get("kind") != "ref")),
+        ("平均每页字数",
+         res.get("avg_words_per_page") or per_page_words),
         ("其中整页图", f"{sum(u.get('figure_pages', 0) for u in units)} 页（按满版 20% 折算）"),
         ("全书可分配字数", res["total_words"]),
         ("名单需求合计", res["total_target"]),

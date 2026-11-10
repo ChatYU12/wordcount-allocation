@@ -252,7 +252,7 @@ class TestSampleAllocation(unittest.TestCase):
         wb = openpyxl.load_workbook(io.BytesIO(data))
         self.assertEqual(
             wb.sheetnames,
-            ["分配总表", "按人汇总", "章节明细", "编写任务书", "计算说明"],
+            ["分配总表", "按人汇总", "章节明细", "联合编写分工", "编写任务书", "计算说明"],
         )
 
 

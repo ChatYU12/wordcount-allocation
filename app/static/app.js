@@ -51,11 +51,25 @@ function totalPages() {
   return state.units.reduce((a, u) => a + (u.pages || 0), 0);
 }
 
+/* 正文页数：不含参考文献（目录、扉页本就不在单元里） */
+function bodyPages() {
+  const body = state.units.filter((u) => u.kind !== 'ref');
+  const n = body.reduce((a, u) => a + (u.pages || 0), 0);
+  return n || totalPages();
+}
+
 /* 单元的字数权重：开启国标折算时，整页图只算满版的 20% */
 function unitWeight(u) {
   const useFig = $('#figureDiscount') ? $('#figureDiscount').checked : false;
   const figs = u.figure_pages || 0;
   return useFig && figs ? Math.max(0, (u.pages || 0) - figs * 0.8) : (u.pages || 0);
+}
+
+/* 平均法下的每页字数：总字数 ÷ 正文页数 */
+function avgPerPage() {
+  const bp = bodyPages();
+  if (!bp) return 0;
+  return computeTotalWords() / bp;
 }
 
 function totalWeight() {
@@ -113,7 +127,9 @@ function syncWordInputs() {
       const figNote = Math.abs(eff - pages) > 0.01 ? `（有效 ${eff.toFixed(1)} 页）` : '';
       tip.textContent = `${fmt(pages)} 页${figNote} × ${fmt(perPageWords())} 字/页 ≈ ${fmt(total)} 字`;
     } else {
-      tip.textContent = `${fmt(pages)} 页 × ${fmt(ppw)} 字/页 ≈ ${fmt(total)} 字`;
+      const avg = bodyPages() ? (total / bodyPages()) : 0;
+      tip.textContent =
+        `正文 ${fmt(bodyPages())} 页 → 平均 ${avg.toFixed(1)} 字/页（总字数 ÷ 正文页数，不含目录、扉页、参考文献）`;
     }
   }
 }
@@ -546,6 +562,28 @@ function renderResult() {
       <td class="num muted">${seg.hours !== undefined && seg.hours > 0 ? seg.hours : '—'}</td>
       <td class="muted" style="font-size:11.5px">${escapeAttr(noteText(seg))}</td>`;
     tb.appendChild(tr);
+
+    // 联合编写：把两个人各自负责的章节单独列出来
+    if (seg.assignments && seg.assignments.length) {
+      seg.assignments.forEach((a) => {
+        const sub = document.createElement('tr');
+        sub.className = 'assign-row';
+        const subPct = a.target ? ((a.words - a.target) / a.target) * 100 : 0;
+        const subCls = Math.abs(subPct) <= (r.tolerance * 100) ? 'ok' : 'bad';
+        sub.innerHTML = `
+          <td class="muted">└</td>
+          <td><span class="assign-tag">${escapeAttr(a.role)}</span></td>
+          <td class="who">${escapeAttr(a.name)}</td>
+          <td class="chap">${escapeAttr(a.chapter_text || a.labels.join('；'))}</td>
+          <td class="num muted">${a.start}–${a.end}</td>
+          <td class="num">${a.pages}</td>
+          <td class="num">${fmt(a.words)}</td>
+          <td class="num muted">${fmt(a.target)}</td>
+          <td class="ratio ${subCls}">${subPct >= 0 ? '+' : ''}${subPct.toFixed(1)}%</td>
+          <td colspan="2" class="muted" style="font-size:11.5px">段内分得 ${a.unit_count} 个任务</td>`;
+        tb.appendChild(sub);
+      });
+    }
   });
 
   // 汇总行

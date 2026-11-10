@@ -277,6 +277,13 @@ def allocate(
         seg["cross_project"] = len(seg["project_nos"]) > 1
         seg["figure_pages"] = sum(units[x].get("figure_pages", 0) for x in seg["unit_idx"])
         seg["shares"] = split_segment_words(seg["members"], seg["words"])
+        # 合作段：标明每个人实际负责的章节区间
+        if seg["cooperative"]:
+            seg["assignments"] = split_cooperative_assignment(
+                seg["unit_idx"], units, seg["members"]
+            )
+        else:
+            seg["assignments"] = None
 
     total_words = prefix[n]
     total_target = sum(p["target_words"] for p in people)
@@ -457,6 +464,56 @@ def rescale_units(units: List[Dict], per_page_words: int) -> List[Dict]:
         v = dict(u)
         v["words"] = int(round(_weight_of(v) * per_page_words))
         out.append(v)
+    return out
+
+
+def split_cooperative_assignment(
+    unit_idx: List[int], units: List[Dict], members: List[Dict]
+) -> Optional[List[Dict]]:
+    """把合作段内的单元按目标字数比例分给两位成员，各自得到一个连续子区间。
+
+    切点取「累积字数最接近目标比例」的单元边界。段内只有一个单元时无法再分，
+    返回 None，此时按两人共同编写处理。
+    """
+    if len(members) != 2 or len(unit_idx) < 2:
+        return None
+    t0 = max(0, members[0].get("target_words") or 0)
+    t1 = max(0, members[1].get("target_words") or 0)
+    total_t = t0 + t1
+    if total_t <= 0:
+        return None
+
+    words = [units[x].get("words") or 0 for x in unit_idx]
+    total_w = sum(words)
+    if total_w <= 0:
+        return None
+
+    want = t0 / total_t
+    cum = 0
+    best_k = 1
+    best_diff = None
+    for k in range(1, len(unit_idx)):
+        cum += words[k - 1]
+        diff = abs(cum / total_w - want)
+        if best_diff is None or diff < best_diff:
+            best_diff, best_k = diff, k
+
+    out = []
+    for member, slice_idx in ((members[0], unit_idx[:best_k]), (members[1], unit_idx[best_k:])):
+        sub_units = [units[x] for x in slice_idx]
+        w = sum(u.get("words") or 0 for u in sub_units)
+        out.append({
+            "name": member["name"],
+            "role": member["role"],
+            "target": member.get("target_words") or 0,
+            "start": sub_units[0]["start"],
+            "end": sub_units[-1]["end"],
+            "pages": sub_units[-1]["end"] - sub_units[0]["start"] + 1,
+            "words": w,
+            "labels": [u["label"] for u in sub_units],
+            "chapter_text": compress_chapter_text(slice_idx, units),
+            "unit_count": len(slice_idx),
+        })
     return out
 
 

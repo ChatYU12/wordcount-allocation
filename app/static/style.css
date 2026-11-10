@@ -384,3 +384,14 @@ input[type="range"] { width: 160px; accent-color: var(--amber); }
   border-color: var(--navy-2);
   background: #fff;
 }
+
+/* 联合编写：段内每个人的实际分工 */
+.tbl tr.assign-row { background: #fbfdfb; }
+.tbl tr.assign-row td { border-top: 1px dashed #e3ebe6; padding-top: 7px; padding-bottom: 7px; }
+.tbl tr.assign-row .who { color: #2f5d47; font-size: 12.5px; }
+.tbl tr.assign-row .chap { color: #4b5b6b; font-size: 12px; }
+.assign-tag {
+  display: inline-block; margin-right: 6px; padding: 1px 6px;
+  border-radius: 4px; background: #e8f3ec; color: #2f5d47;
+  font-size: 11px; font-weight: 600;
+}

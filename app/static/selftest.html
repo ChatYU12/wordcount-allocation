@@ -61,7 +61,22 @@ ifr.onload = async () => {
   $('#runBtn').click();
   await sleep(3000);
   const rows = d.querySelectorAll('#resultTable tbody tr');
-  log(rows.length === 10, '结果表行数=' + rows.length + '（9 段 + 1 合计）');
+  const assignRows = d.querySelectorAll('#resultTable tbody tr.assign-row').length;
+  log(rows.length === 10 + assignRows && assignRows >= 2,
+      '结果表行数=' + rows.length + '（9 段 + ' + assignRows + ' 分工子行 + 1 合计）');
+
+  // ⑥ 联合编写分工：子行要标出各自负责的章节与页码
+  const subRows = [...d.querySelectorAll('#resultTable tbody tr.assign-row')];
+  if (subRows.length >= 2) {
+    const cells = subRows.map((tr) => [...tr.children].map((c) => c.textContent.trim()));
+    const names = cells.map((c) => c[2]);
+    const ranges = cells.map((c) => c[4]);
+    log(new Set(names).size === names.length, '联合分工姓名：' + names.join(' / '));
+    log(ranges.every((r) => /^\d+–\d+$/.test(r)), '联合分工页码：' + ranges.join(' / '));
+    log(cells.every((c) => c[3] && c[3].length > 2), '联合分工章节均已标注');
+  } else {
+    log(false, '未找到联合编写分工子行');
+  }
 
   // 合计行首列 colspan=4，故「分配字数」是第 4 个单元格
   const cells = rows.length ? Array.from(rows[rows.length - 1].children).map((c) => c.textContent.trim()) : [];
@@ -140,6 +155,7 @@ ifr.onload = async () => {
   } catch (e) {
     log(false, '扉页识别测试异常：' + (e && e.message ? e.message : e));
   }
+
 
   document.getElementById('log').textContent = 'RESULT\n' + out.join('\n');
   document.title = out.every((x) => x.startsWith('PASS')) ? 'ALL_PASS' : 'HAS_FAIL';
