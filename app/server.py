@@ -24,7 +24,9 @@ from pydantic import BaseModel
 import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from allocator import allocate_best, distribute_words, infer_per_page_words, rescale_units  # noqa: E402
+from allocator import (  # noqa: E402
+    allocate_best, distribute_words, infer_per_page_words, optimize_order, rescale_units,
+)
 from excel_export import build_workbook  # noqa: E402
 from pdf_parser import parse_book  # noqa: E402
 from people_import import build_people_template, parse_people_csv, parse_people_xlsx  # noqa: E402
@@ -401,6 +403,34 @@ def allocate(req: AllocateRequest) -> JSONResponse:
     res["warnings"] = notes + res.get("warnings", [])
     # 回填每个单元
     res["units"] = scaled
+    return JSONResponse(res)
+
+
+@app.post("/api/optimize-order")
+def optimize(req: AllocateRequest) -> JSONResponse:
+    """自动搜索偏差最小的名单顺序（同角色同目标的人互换不影响结果）。"""
+    by_average = bool(req.total_words and req.total_words > 0) or req.calibrate
+    units = _prepare_units([u.model_dump() for u in req.units], req.use_figure_discount and not by_average)
+    people = [p.model_dump() for p in req.people]
+    if not units or not people:
+        raise HTTPException(400, "缺少单元或人员数据")
+
+    total_pages = sum(u["pages"] for u in units) or 1
+    if req.total_words and req.total_words > 0:
+        units = distribute_words(units, req.total_words)
+    elif req.calibrate:
+        units = distribute_words(units, sum(p["target_words"] for p in people))
+    else:
+        units = rescale_units(units, req.per_page_words)
+
+    try:
+        res = optimize_order(units, people, tolerance=req.tolerance)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(400, str(exc)) from exc
+
+    res["per_page_words"] = req.per_page_words
+    res["body_pages"] = total_pages
+    res["units"] = units
     return JSONResponse(res)
 
 

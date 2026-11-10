@@ -703,3 +703,79 @@ class TestSectionSplit(unittest.TestCase):
         self.assertTrue(any("、" in x for x in labels), "没有一条 label 带上分节标题")
         # 每个单元都有 label，且互不重复到无法区分（用页码兜底）
         self.assertTrue(all(x for x in labels))
+
+
+class TestPairRule(unittest.TestCase):
+    """联合编写只能是主编 + 副主编。"""
+
+    def test_only_chief_with_vice(self):
+        import sys
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
+        from allocator import DEFAULT_PAIRS, _pair_allowed
+
+        def ok(r1, r2):
+            return _pair_allowed({"role": r1, "allow_pair": True},
+                                 {"role": r2, "allow_pair": True}, DEFAULT_PAIRS)
+
+        self.assertTrue(ok("主编", "副主编"))
+        self.assertTrue(ok("副主编", "主编"))     # 顺序不影响
+        self.assertFalse(ok("主编", "主编"))      # 不允许
+        self.assertFalse(ok("副主编", "副主编"))  # 不允许
+        self.assertFalse(ok("主编", "参编"))
+        self.assertFalse(ok("参编", "参编"))
+
+    def test_allow_pair_flag_respected(self):
+        import sys
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
+        from allocator import DEFAULT_PAIRS, _pair_allowed
+        self.assertFalse(_pair_allowed({"role": "主编", "allow_pair": False},
+                                       {"role": "副主编", "allow_pair": True}, DEFAULT_PAIRS))
+
+
+class TestOptimizeOrder(unittest.TestCase):
+    """自动搜索最优名单顺序。"""
+
+    def _units(self):
+        # 复刻一本有「大任务卡住」结构的书：25 页 + 55 页 + 若干小任务
+        spec = [1, 5, 5, 14, 2, 55, 11, 1, 6, 6, 5, 2, 4, 5, 4, 5, 2, 7, 9, 8, 11, 7, 7, 7, 11]
+        out, start = [], 1
+        for i, pages in enumerate(spec):
+            out.append({"index": i, "label": f"单元{i+1}", "kind": "task",
+                        "start": start, "end": start + pages - 1, "pages": pages,
+                        "words": pages * 1300, "project_no": i, "figure_pages": 0})
+            start += pages
+        return out
+
+    def _people(self):
+        return [
+            {"name": "甲", "role": "主编", "target_words": 60000, "allow_pair": True},
+            {"name": "乙", "role": "主编", "target_words": 50000, "allow_pair": True},
+            {"name": "丙", "role": "主编", "target_words": 30000, "allow_pair": True},
+            {"name": "丁", "role": "副主编", "target_words": 20000, "allow_pair": True},
+            {"name": "戊", "role": "副主编", "target_words": 20000, "allow_pair": True},
+            {"name": "己", "role": "副主编", "target_words": 20000, "allow_pair": True},
+            {"name": "庚", "role": "副主编", "target_words": 20000, "allow_pair": True},
+            {"name": "辛", "role": "副主编", "target_words": 20000, "allow_pair": True},
+            {"name": "壬", "role": "副主编", "target_words": 20000, "allow_pair": True},
+        ]
+
+    def test_optimize_finds_better_order(self):
+        import sys
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
+        from allocator import allocate_best, optimize_order
+        units, people = self._units(), self._people()
+        plain = allocate_best(units, people, tolerance=0.10)
+        opt = optimize_order(units, people, tolerance=0.10)
+        self.assertLessEqual(opt["best_bound"], plain["best_bound"])
+        self.assertEqual(len(opt["optimized"]["order"]), len(people))
+        self.assertGreater(opt["optimized"]["searched"], 1)
+
+    def test_optimized_cooperation_is_chief_with_vice(self):
+        import sys
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
+        from allocator import optimize_order
+        res = optimize_order(self._units(), self._people(), tolerance=0.10)
+        for seg in res["segments"]:
+            if seg["cooperative"]:
+                roles = set(m["role"] for m in seg["members"])
+                self.assertEqual(roles, {"主编", "副主编"}, "合作段只能是主编+副主编")

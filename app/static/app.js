@@ -678,6 +678,50 @@ function clearResultPanel() {
   });
 }
 
+/* ---------------- 自动优化名单顺序 ---------------- */
+function bindOptimizeOrder() {
+  const btn = $('#optimizeBtn');
+  if (!btn) return;
+  btn.addEventListener('click', async () => {
+    if (!state.units.length) return toast('请先导入书稿，才知道有哪些章节可分');
+    if (state.people.length < 2) return toast('至少需要两位编写人');
+    const label = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = '搜索中…';
+    try {
+      const res = await fetch('/api/optimize-order', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload()),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || '优化失败');
+      const order = (data.optimized && data.optimized.order) || [];
+      if (!order.length) throw new Error('没有返回顺序');
+      const byName = new Map(state.people.map((p) => [p.name, p]));
+      state.people = order.map((o) => byName.get(o.name) || o);
+      renderPeople();
+      updateStats();
+      const b = (data.best_bound * 100).toFixed(2);
+      clearResultPanel();
+      state.result = data;
+      renderResult();
+      $('#exportBtn').disabled = false;
+      $('#copyBtn').disabled = false;
+      showPolicyNote(
+        `已搜索 ${data.optimized.searched} 种名单顺序，最优偏差 ±${b}%。` +
+        `顺序已自动调整为：${order.map((o) => o.name).join(' → ')}`
+      );
+      toast(`已优化：偏差 ±${b}%（搜索 ${data.optimized.searched} 种顺序）`);
+    } catch (err) {
+      toast('优化失败：' + err.message);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = label;
+    }
+  });
+}
+
 /* ---------------- 上传扉页，自动识别名单 ---------------- */
 function bindCoverUpload() {
   const btn = $('#coverBtn');
@@ -851,6 +895,7 @@ function bindPeopleImport() {
     });
   }
   bindCoverUpload();
+  bindOptimizeOrder();
   const tpl = $('#templateBtn');
   if (tpl) {
     tpl.addEventListener('click', () => { window.location.href = '/api/people-template'; });

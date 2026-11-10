@@ -30,10 +30,11 @@ ROLE_MEMBER = "参编"
 ROLE_CHIEF_EDITOR = "总主编"
 
 # 默认允许的合作组合（顺序敏感：前者带后者）
+# 硬性规则：联合编写只能是「主编 + 副主编」。
+# 主编带主编、副主编带副主编都不允许。
 DEFAULT_PAIRS: List[List[str]] = [
     [ROLE_CHIEF, ROLE_VICE],
-    [ROLE_CHIEF_EDITOR, ROLE_CHIEF],
-    [ROLE_CHIEF_EDITOR, ROLE_VICE],
+    [ROLE_VICE, ROLE_CHIEF],   # 顺序不影响判定，但两个人谁在前由名单顺序决定
 ]
 
 
@@ -575,3 +576,93 @@ def check_role_hierarchy(res: Dict) -> List[str]:
                 f"任务不可拆时可能出现这种情况，建议调整名单顺序或允许拆分该章节。"
             )
     return out
+
+
+def _group_people(people: List[Dict]) -> List[tuple]:
+    """按（角色, 目标字数）分组，同组的人互换不改变结果。"""
+    groups: Dict[tuple, List[Dict]] = {}
+    order: List[tuple] = []
+    for p in people:
+        key = (p.get("role"), p.get("target_words") or 0)
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(p)
+    return [(k, groups[k]) for k in order]
+
+
+def _multiset_orders(groups: List[tuple]) -> List[List[int]]:
+    """生成「组序号」的所有不重复排列：第 gi 组恰好出现 len(group) 次。"""
+    n = len(groups)
+    counts = [len(items) for _, items in groups]
+    total = sum(counts)
+    out: List[List[int]] = []
+
+    def walk(seq: List[int], remain: List[int]) -> None:
+        if len(seq) == total:
+            out.append(list(seq))
+            return
+        for gi in range(n):
+            if remain[gi] <= 0:
+                continue
+            remain[gi] -= 1
+            seq.append(gi)
+            walk(seq, remain)
+            seq.pop()
+            remain[gi] += 1
+
+    walk([], list(counts))
+    return out
+
+
+def optimize_order(
+    units: List[Dict],
+    people: List[Dict],
+    tolerance: float = 0.10,
+    max_orders: int = 3000,
+) -> Dict:
+    """自动搜索偏差最小的名单顺序。
+
+    名单顺序决定两件事：谁先领前面的章节、谁能和谁搭档。
+    同角色同目标的人互换不影响结果，因此只需搜索「组」的排列。
+    """
+    workable = [p for p in people if (p.get("target_words") or 0) > 0]
+    if len(workable) < 2:
+        raise ValueError("至少需要两位有字数的编写人")
+
+    groups = _group_people(workable)
+    orders = _multiset_orders(groups)
+    truncated = False
+    if len(orders) > max_orders:
+        truncated = True
+        step = len(orders) / max_orders
+        orders = [orders[int(i * step)] for i in range(max_orders)]
+
+    best: Optional[Dict] = None
+    best_order: Optional[List[Dict]] = None
+    for seq in orders:
+        picks = [0] * len(groups)
+        candidate: List[Dict] = []
+        for gi in seq:
+            candidate.append(groups[gi][1][picks[gi]])
+            picks[gi] += 1
+        try:
+            res = allocate_best(units, candidate, tolerance=tolerance)
+        except Exception:  # noqa: BLE001
+            continue
+        if best is None or res["best_bound"] < best["best_bound"]:
+            best = res
+            best_order = candidate
+
+    if best is None or best_order is None:
+        raise ValueError("没有找到可行的分配方案")
+
+    best["optimized"] = {
+        "order": [
+            {"name": p["name"], "role": p["role"], "target_words": p["target_words"]}
+            for p in best_order
+        ],
+        "searched": len(orders),
+        "truncated": truncated,
+    }
+    return best
