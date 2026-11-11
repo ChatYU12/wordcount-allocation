@@ -373,6 +373,28 @@ function applyBulk(clearFirst) {
   toast(`已导入 ${lines.length} 个单元`);
 }
 
+/* ---------------- 大文件：只传前若干页 ---------------- */
+/* 解析只需要目录和开头几页，正文末尾用总页数推算，所以可以只传一小段。
+   大幅降低上传体积，避免公网隧道的 100 秒上限。 */
+async function slicePdfHead(file, headPages) {
+  if (!window.PDFLib) throw new Error('PDF 处理库未加载');
+  const { PDFDocument } = window.PDFLib;
+  const buf = await file.arrayBuffer();
+  const src = await PDFDocument.load(buf, { ignoreEncryption: true, updateMetadata: false });
+  const total = src.getPageCount();
+  if (total <= headPages) return { blob: file, totalPages: total, sliced: false };
+  const out = await PDFDocument.create();
+  const idx = Array.from({ length: headPages }, (_, i) => i);
+  const pages = await out.copyPages(src, idx);
+  pages.forEach((p) => out.addPage(p));
+  const bytes = await out.save();
+  return {
+    blob: new Blob([bytes], { type: 'application/pdf' }),
+    totalPages: total,
+    sliced: true,
+  };
+}
+
 /* ---------------- 上传解析 ---------------- */
 async function uploadPdf(file) {
   if (!file) return;
@@ -382,17 +404,9 @@ async function uploadPdf(file) {
   // 大文件走公网隧道会被 Cloudflare 的 100 秒上限掐断，提前提醒
   const mb = file.size / 1024 / 1024;
   const overTunnel = !/^(127\.0\.0\.1|localhost)$/.test(location.hostname);
-  if (overTunnel && mb > 40) {
-    const ok = confirm(
-      `这个 PDF 有 ${mb.toFixed(0)} MB。\n\n` +
-      `当前是通过公网隧道访问的，Cloudflare 对单次请求有 100 秒上限，` +
-      `大文件上传+解析很可能超时（表现为 HTTP 524）。\n\n` +
-      `建议改用内网地址（同一 Wi-Fi 下）：\n` +
-      `  http://192.168.2.204:8770\n\n` +
-      `仍要继续尝试吗？`
-    );
-    if (!ok) return;
-  }
+  // 超过这个体积就走「只传前 30 页」的省流量模式（切页只要 1 秒，传得更快）
+  const SLICE_LIMIT_MB = 15;
+  const SLICE_PAGES = 30;
 
   state.parsing = true;
   const note = $('#parseNote');
@@ -400,7 +414,25 @@ async function uploadPdf(file) {
   note.innerHTML = '<span class="spinner" style="border-color:#ccc;border-top-color:#1f3a5f"></span> 正在解析目录…';
 
   const fd = new FormData();
-  fd.append('file', file);
+  let sendFile = file;
+  let totalPagesOverride = null;
+  if (overTunnel && mb > SLICE_LIMIT_MB && window.PDFLib) {
+    try {
+      note.innerHTML = '<span class="spinner" style="border-color:#ccc;border-top-color:#1f3a5f"></span> '
+        + `文件较大（${mb.toFixed(0)} MB），正在提取前 ${SLICE_PAGES} 页（目录所在部分）…`;
+      const sliced = await slicePdfHead(file, SLICE_PAGES);
+      if (sliced.sliced) {
+        sendFile = sliced.blob;
+        totalPagesOverride = sliced.totalPages;
+        note.innerHTML = '<span class="spinner" style="border-color:#ccc;border-top-color:#1f3a5f"></span> '
+          + `已提取 ${(sliced.blob.size / 1024 / 1024).toFixed(1)} MB（原 ${mb.toFixed(0)} MB），正在解析…`;
+      }
+    } catch (e) {
+      console.warn('切片失败，改为整本上传', e);
+    }
+  }
+  fd.append('file', sendFile, file.name);
+  if (totalPagesOverride) fd.append('total_pages', String(totalPagesOverride));
   fd.append('per_page_words', String(perPageWords()));
   fd.append('include_ref', String($('#includeRef').checked));
   const splitChk = $('#splitSections');

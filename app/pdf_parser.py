@@ -608,12 +608,18 @@ def parse_book(
     figure_discount: float = 0.2,
     split_sections: bool = False,
     min_section_pages: int = 1,
+    total_pages_override: Optional[int] = None,
 ) -> Dict:
-    """解析整本书，返回结构化结果（可直接交给前端编辑）。"""
+    """解析整本书，返回结构化结果（可直接交给前端编辑）。
+
+    total_pages_override：只上传了前若干页（大文件省流量）时，用原书总页数
+    覆盖实际页数，否则正文末尾会被算短。
+    """
     doc = fitz.open(pdf_path)
-    pages_total = doc.page_count
+    local_pages = doc.page_count
+    pages_total = total_pages_override or local_pages
     # 只提取一次全文文本，后续所有统计复用（避免 300+ 页重复解析）
-    texts: List[str] = [doc[i].get_text() for i in range(pages_total)]
+    texts: List[str] = [doc[i].get_text() for i in range(local_pages)]
 
     tpages = toc_pages if toc_pages is not None else find_toc_pages(doc, texts=texts)
     if not tpages:
@@ -640,6 +646,8 @@ def parse_book(
         nodes, off, doc, per_page_words=per_page_words,
         include_ref=include_ref, figure_discount=figure_discount, texts=texts,
         split_sections=split_sections, min_section_pages=min_section_pages,
+        # 只上传了前若干页时，用原书总页数推算正文末尾
+        last_book_page=(pages_total - 1 - off) if total_pages_override else None,
     )
     measure_real_chars(doc, units, off, texts=texts)
     authors = detect_authors(doc)
