@@ -27,6 +27,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from allocator import (  # noqa: E402
     allocate_best, allocate_under_bound, best_under_bound, distribute_words,
     infer_per_page_words, optimize_order, optimize_under_bound, rescale_units,
+    solve_allow_over,
 )
 from excel_export import build_workbook  # noqa: E402
 from pdf_parser import parse_book  # noqa: E402
@@ -342,6 +343,7 @@ def allocate(req: AllocateRequest) -> JSONResponse:
 
     notes: List[str] = []
     ppw = req.per_page_words
+    _need_total = sum(p["target_words"] for p in people)
     total_pages = sum(u["pages"] for u in units) or 1
     if req.total_words and req.total_words > 0:
         # 用户手动指定全书总字数：按页数比例精确分摊
@@ -357,7 +359,7 @@ def allocate(req: AllocateRequest) -> JSONResponse:
         scaled = rescale_units(units, ppw)
     try:
         if req.allow_over:
-            res = best_under_bound(scaled, people, min_bound=0.01, max_bound=0.30, over_cap=2.0)
+            res = solve_allow_over(scaled, people)
             res["by_average"] = by_average
             res["avg_words_per_page"] = round(
                 (req.total_words or sum(p["target_words"] for p in people)) / total_pages, 1
@@ -392,6 +394,17 @@ def allocate(req: AllocateRequest) -> JSONResponse:
             f"各章节字数 = 页数 × 平均每页字数。"
         )
     res["hours_per_1000"] = req.hours_per_1000
+
+    # 全书字数不足制度需求时，必然有人欠额——这是口径问题，必须点明
+    if _need_total and res["total_words"] < _need_total * 0.995:
+        gap = _need_total - res["total_words"]
+        suggest_ppw = round(_need_total / total_pages) if total_pages else 0
+        notes.append(
+            f"⚠ 全书可分配字数 {res['total_words']:,} 字，少于名单制度需求 {_need_total:,} 字，"
+            f"缺口 {gap:,} 字——无论怎么分配都会有人写不够。"
+            f"建议：勾选「用名单需求合计作为全书总字数」（相当于 {suggest_ppw} 字/页），"
+            f"或把每页字数改成 {suggest_ppw}。"
+        )
 
     # 目标为 0 的人（多为余量不足的参编）不参与分配，明确告知
     zero_people = [p["name"] for p in people if (p.get("target_words") or 0) <= 0]
@@ -476,6 +489,14 @@ def optimize(req: AllocateRequest) -> JSONResponse:
     res["per_page_words"] = req.per_page_words
     res["body_pages"] = total_pages
     res["units"] = units
+    need_total = sum(p["target_words"] for p in people)
+    if need_total and res["total_words"] < need_total * 0.995:
+        gap = need_total - res["total_words"]
+        suggest_ppw = round(need_total / total_pages) if total_pages else 0
+        res.setdefault("warnings", []).insert(0,
+            f"⚠ 全书 {res['total_words']:,} 字 < 制度需求 {need_total:,} 字，缺口 {gap:,} 字——"
+            f"必然有人欠额。建议勾选「用名单需求合计作为全书总字数」（≈{suggest_ppw} 字/页）。"
+        )
     res["diagnosis"] = _diagnose_granularity(units, res)
     return JSONResponse(res)
 
@@ -497,7 +518,7 @@ def export(req: AllocateRequest) -> StreamingResponse:
     else:
         scaled = rescale_units(units, ppw)
     if req.allow_over:
-        res = best_under_bound(scaled, people, min_bound=0.01, max_bound=0.30, over_cap=2.0)
+        res = solve_allow_over(scaled, people)
     else:
         res = allocate_best(
             scaled,

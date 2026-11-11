@@ -99,6 +99,24 @@ ifr.onload = async () => {
   const firstRow = rows2[0] ? Array.from(rows2[0].children).map((c) => c.textContent.trim()) : [];
   log(firstRow[9] && firstRow[9] !== '—', '首段课时=' + firstRow[9]);
 
+  // ⑦ 允许超额模式：勾选后生成方案，横幅应显示「允许超额」口径
+  const allowBox = d.querySelector('#allowOver');
+  if (allowBox) {
+    allowBox.checked = true;
+    allowBox.dispatchEvent(new Event('change', { bubbles: true }));
+    $('#runBtn').click();
+    await sleep(7000);
+    const bannerText = (d.querySelector('#banners') || {}).textContent || '';
+    log(/允许超额/.test(bannerText), '允许超额模式已生效：' + bannerText.replace(/\s+/g, ' ').slice(0, 60));
+    log(/最大欠额/.test(bannerText), '横幅含最大欠额指标');
+    const segRows = d.querySelectorAll('#resultTable tbody tr').length;
+    log(segRows >= 2, '允许超额模式生成 ' + segRows + ' 行');
+    allowBox.checked = false;
+    allowBox.dispatchEvent(new Event('change', { bubbles: true }));
+  } else {
+    log(false, '未找到 allowOver 复选框');
+  }
+
   // ⑥ 切回「每页字数」口径，验证整页图开关会改变总字数
   ppw.value = '1224';
   ppw.dispatchEvent(new Event('input', { bubbles: true }));

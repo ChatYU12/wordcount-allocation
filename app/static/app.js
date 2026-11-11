@@ -379,6 +379,21 @@ async function uploadPdf(file) {
   if (!/\.pdf$/i.test(file.name)) return toast('请选择 PDF 文件');
   if (state.parsing) return;
 
+  // 大文件走公网隧道会被 Cloudflare 的 100 秒上限掐断，提前提醒
+  const mb = file.size / 1024 / 1024;
+  const overTunnel = !/^(127\.0\.0\.1|localhost)$/.test(location.hostname);
+  if (overTunnel && mb > 40) {
+    const ok = confirm(
+      `这个 PDF 有 ${mb.toFixed(0)} MB。\n\n` +
+      `当前是通过公网隧道访问的，Cloudflare 对单次请求有 100 秒上限，` +
+      `大文件上传+解析很可能超时（表现为 HTTP 524）。\n\n` +
+      `建议改用内网地址（同一 Wi-Fi 下）：\n` +
+      `  http://192.168.2.204:8770\n\n` +
+      `仍要继续尝试吗？`
+    );
+    if (!ok) return;
+  }
+
   state.parsing = true;
   const note = $('#parseNote');
   note.className = 'parse-note';
@@ -395,7 +410,21 @@ async function uploadPdf(file) {
   const t0 = performance.now();
   try {
     const res = await fetch('/api/parse', { method: 'POST', body: fd });
-    const data = await res.json();
+    if (res.status === 524 || res.status === 504) {
+      throw new Error(
+        '公网隧道超时（HTTP ' + res.status + '）。大文件请改用内网地址访问，' +
+        '或压缩 PDF 后重试'
+      );
+    }
+    if (res.status === 413) {
+      throw new Error('文件太大，被网关拒绝（HTTP 413）。请改用内网地址或压缩 PDF');
+    }
+    let data;
+    try {
+      data = await res.json();
+    } catch (e) {
+      throw new Error('服务器返回异常（HTTP ' + res.status + '），可能是文件过大导致网关超时');
+    }
     if (!res.ok || !data.ok) {
       throw new Error(data.detail || data.error || '解析失败');
     }
@@ -632,7 +661,27 @@ function renderResult() {
   }
 
   const gap = r.total_words - r.total_target;
-  if (Math.abs(gap) > 0) {
+  // 字数不够：必然有人欠额，给出到字数的修正按钮
+  if (gap < -Math.max(1000, r.total_target * 0.005)) {
+    add('warn', '⚠',
+      `全书可分配 ${fmt(r.total_words)} 字，比名单需求 ${fmt(r.total_target)} 字少 ${fmt(-gap)} 字——` +
+      `这种情况下必然有人写不够，和算法无关。`);
+    if (!$('#fixWordsBtn')) {
+      const btn = document.createElement('button');
+      btn.id = 'fixWordsBtn';
+      btn.className = 'btn sm';
+      btn.style.cssText = 'margin:2px 0 10px 44px';
+      btn.textContent = `改为按名单需求（${fmt(r.total_target)} 字）重算`;
+      btn.addEventListener('click', () => {
+        const cal = $('#calibrate');
+        if (cal) { cal.checked = true; cal.dispatchEvent(new Event('change', { bubbles: true })); }
+        state.mode = 'target';
+        recomputeWords(); syncWordInputs(); updateStats();
+        $('#runBtn').click();
+      });
+      banners.appendChild(btn);
+    }
+  } else if (Math.abs(gap) > 0) {
     add('info', 'i', `可分配字数 ${fmt(r.total_words)}，名单需求 ${fmt(r.total_target)}，${gap > 0 ? '多' : '少'} ${fmt(Math.abs(gap))} 字（每页 ${fmt(r.per_page_words)} 字口径）。`);
   }
 

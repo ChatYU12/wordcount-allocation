@@ -903,3 +903,22 @@ def optimize_under_bound(
         "truncated": len(orders) >= max_orders,
     }
     return refined
+
+
+def solve_allow_over(
+    units: List[Dict],
+    people: List[Dict],
+    over_cap: float = 2.0,
+) -> Dict:
+    """「允许超额」口径的求解入口。
+
+    先按当前名单顺序从紧到松试一遍（顺序已优化过时会立刻命中），
+    都不行再搜索最优顺序。
+    """
+    ladder = [0.04, 0.05, 0.06, 0.07, 0.08, 0.09, 0.10, 0.12, 0.15, 0.20, 0.25]
+    for ub in ladder:
+        try:
+            return allocate_under_bound(units, people, under_bound=ub, over_cap=over_cap)
+        except Exception:  # noqa: BLE001
+            continue
+    return optimize_under_bound(units, people, over_cap=over_cap)
