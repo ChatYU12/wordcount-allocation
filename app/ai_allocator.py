@@ -19,41 +19,71 @@ import urllib.error
 import urllib.request
 from typing import Dict, List, Optional, Tuple
 
-DEFAULT_MODEL = "codex/gpt-6-luna"
-GATEWAY = os.environ.get("AI_GATEWAY", "http://127.0.0.1:3425/v1")
 ENV_FILE = os.path.expanduser("~/.dsh/.env")
-ENV_KEY = "MAGPIE_GATEWAY_KEY"
+
+# 可用的模型提供方。deepseek 走 WorkBuddy Manager 反代，本地 magpie 作备用。
+PROVIDERS: Dict[str, Dict[str, str]] = {
+    "deepseek": {
+        "label": "DeepSeek v4.1",
+        "base": "https://newpower.zjzaki.cn/workbuddy-manager/v1",
+        "key_env": "MARIO_WORKBUDDY_MANAGER_API_KEY",
+        "model": "cn:deepseek-v4.1-flash",
+        # 反代网关 60 秒硬超时，留点余量提前放弃，好尽快换备用模型
+        "timeout": "35",
+    },
+    "local": {
+        "label": "本地网关 gpt-6-luna",
+        "base": "http://127.0.0.1:3425/v1",
+        "key_env": "MAGPIE_GATEWAY_KEY",
+        "model": "codex/gpt-6-luna",
+        "timeout": "120",
+    },
+}
+DEFAULT_PROVIDER = "deepseek"
 
 
-def _api_key() -> Optional[str]:
-    key = os.environ.get(ENV_KEY, "").strip()
-    if key:
-        return key
+def _read_env(name: str) -> Optional[str]:
+    val = os.environ.get(name, "").strip()
+    if val:
+        return val
     try:
         for line in open(ENV_FILE, encoding="utf-8"):
-            if line.startswith(ENV_KEY):
+            if line.startswith(name):
                 return line.split("=", 1)[1].strip().strip('"').strip("'")
     except OSError:
         pass
     return None
 
 
-def available() -> bool:
-    return bool(_api_key())
+def _api_key(provider: str = DEFAULT_PROVIDER) -> Optional[str]:
+    cfg = PROVIDERS.get(provider) or PROVIDERS[DEFAULT_PROVIDER]
+    return _read_env(cfg["key_env"])
 
 
-def _call_llm(prompt: str, model: str, timeout: int = 180) -> str:
-    key = _api_key()
+def available(provider: str = DEFAULT_PROVIDER) -> bool:
+    return bool(_api_key(provider))
+
+
+def provider_info(provider: str = DEFAULT_PROVIDER) -> Dict[str, str]:
+    cfg = PROVIDERS.get(provider) or PROVIDERS[DEFAULT_PROVIDER]
+    return {"provider": provider, "label": cfg["label"], "model": cfg["model"]}
+
+
+def _call_llm(prompt: str, model: str, timeout: int = 0,
+              provider: str = DEFAULT_PROVIDER) -> str:
+    cfg = PROVIDERS.get(provider) or PROVIDERS[DEFAULT_PROVIDER]
+    timeout = timeout or int(cfg.get("timeout") or 120)
+    key = _api_key(provider)
     if not key:
-        raise RuntimeError("没有可用的模型凭据（MAGPIE_GATEWAY_KEY）")
+        raise RuntimeError(f"没有可用的模型凭据（{cfg['key_env']}）")
     body = json.dumps({
-        "model": model,
+        "model": model or cfg["model"],
         "messages": [{"role": "user", "content": prompt}],
         "max_tokens": 4000,
         "temperature": 0.1,
     }).encode()
     req = urllib.request.Request(
-        f"{GATEWAY}/chat/completions", data=body,
+        f"{cfg['base']}/chat/completions", data=body,
         headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
     )
     with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -233,9 +263,10 @@ def ai_allocate(
     units: List[Dict],
     people: List[Dict],
     per_page_words: int = 1300,
-    model: str = DEFAULT_MODEL,
+    model: str = "",
     max_attempts: int = 2,
     samples: int = 1,
+    provider: str = DEFAULT_PROVIDER,
 ) -> Dict:
     """调用大模型生成分配方案，带校验与重试。
 
@@ -246,6 +277,8 @@ def ai_allocate(
     if not units or not workable:
         raise ValueError("缺少章节或编写人")
 
+    cfg = PROVIDERS.get(provider) or PROVIDERS[DEFAULT_PROVIDER]
+    model = model or cfg["model"]
     best: Optional[Dict] = None
     last_err = ""
     attempts_total = 0
@@ -253,7 +286,7 @@ def ai_allocate(
         prompt = _build_prompt(units, workable, per_page_words)
         for attempt in range(max_attempts):
             attempts_total += 1
-            text = _call_llm(prompt, model)
+            text = _call_llm(prompt, model, provider=provider)
             obj = _extract_json(text)
             if not obj or "segments" not in obj:
                 last_err = "没有返回合法的 JSON"
@@ -271,4 +304,38 @@ def ai_allocate(
     if best is None:
         raise ValueError(f"模型没能给出合规方案（{last_err}）。可以改用算法分配。")
     best["samples"] = samples
+    best["provider"] = provider
+    best["provider_label"] = cfg["label"]
     return best
+
+
+def ai_allocate_resilient(
+    units: List[Dict],
+    people: List[Dict],
+    per_page_words: int = 1300,
+    provider: str = DEFAULT_PROVIDER,
+    samples: int = 2,
+) -> Dict:
+    """先按指定 provider 跑，失败就换备用 provider。
+
+    DeepSeek 走的是第三方反代，网关有 60 秒硬超时且负载波动大，
+    同一个请求可能秒回也可能 504；本地网关没有这个限制。
+    """
+    errors: List[str] = []
+    order = [provider] + [p for p in ("local",) if p != provider]
+    for prov in order:
+        if not available(prov):
+            errors.append(f"{prov}: 无凭据")
+            continue
+        try:
+            res = ai_allocate(units, people, per_page_words=per_page_words,
+                              provider=prov, samples=samples)
+            if prov != provider:
+                res["warnings"].insert(
+                    0, f"{PROVIDERS[provider]['label']} 调用失败，已自动改用 {PROVIDERS[prov]['label']} 生成。"
+                )
+                res["fallback_from"] = provider
+            return res
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"{prov}: {str(exc)[:80]}")
+    raise ValueError("所有模型都没能给出方案 —— " + "；".join(errors))

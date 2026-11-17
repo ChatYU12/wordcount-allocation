@@ -679,9 +679,13 @@ function renderResult() {
 
   if (r.mode === 'ai') {
     const b = ((r.best_bound || 0) * 100).toFixed(1);
+    const who = r.provider_label || r.model || 'AI';
     add('warn', '🤖',
-      `本方案由 ${r.model || 'AI'} 生成：最大偏差 ${b}%（采样 ${r.samples || 1} 次取优）。` +
+      `本方案由 ${who} 生成：最大偏差 ${b}%（采样 ${r.samples || 1} 次取优）。` +
       `模型负责「把章节分给谁」，页码、字数、偏差都在本地核算。`);
+    if (r.fallback_from) {
+      add('info', 'i', `原本指定的模型调用失败（网关超时），已自动改用 ${who}。`);
+    }
     add('info', 'i',
       `AI 的数值平衡不如算法：同样一本书，算法只要 3 秒就能做到 ±17%，AI 通常要 30–60 秒且偏差更大。` +
       `如果要更精确的方案，点「生成分配方案」用算法再算一次，两份方案可以对比着挑。`);

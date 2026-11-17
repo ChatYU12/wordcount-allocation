@@ -32,7 +32,9 @@ from allocator import (  # noqa: E402
 from excel_export import build_workbook  # noqa: E402
 from pdf_parser import parse_book  # noqa: E402
 from people_import import build_people_template, parse_people_csv, parse_people_xlsx  # noqa: E402
-from ai_allocator import available as ai_available, ai_allocate  # noqa: E402
+from ai_allocator import (  # noqa: E402
+    PROVIDERS as AI_PROVIDERS, ai_allocate_resilient, available as ai_available,
+)
 from cover_parser import IMAGE_EXTS, parse_cover  # noqa: E402
 from policy import build_initial_people, suggest_members  # noqa: E402
 
@@ -163,8 +165,9 @@ class AllocateRequest(BaseModel):
     hours_per_1000: float = 1.0
     # 允许超额：只约束欠额，超额不限（业务上「多写没关系，少写不行」）
     allow_over: bool = False
-    # AI 分配：采样次数（模型每次输出不同，多采几次取最优）
+    # AI 分配：采样次数与提供方（deepseek / local）
     ai_samples: int = 2
+    ai_provider: str = "deepseek"
     # 任务书
     book_title: str = ""
     deadline: str = ""
@@ -468,8 +471,15 @@ def _diagnose_granularity(units: List[Dict], res: Dict) -> List[str]:
 
 @app.get("/api/ai-status")
 def ai_status() -> JSONResponse:
-    """前端用来决定是否显示「用 AI 分配」按钮。"""
-    return JSONResponse({"available": ai_available()})
+    """前端用来决定是否显示「用 AI 分配」按钮，以及列出可选模型。"""
+    return JSONResponse({
+        "available": any(ai_available(p) for p in AI_PROVIDERS),
+        "providers": [
+            {"id": pid, "label": cfg["label"], "model": cfg["model"],
+             "available": ai_available(pid)}
+            for pid, cfg in AI_PROVIDERS.items()
+        ],
+    })
 
 
 @app.post("/api/ai-allocate")
@@ -495,8 +505,9 @@ def ai_alloc(req: AllocateRequest) -> JSONResponse:
         ppw = req.per_page_words
 
     try:
-        res = ai_allocate(
+        res = ai_allocate_resilient(
             scaled, people, per_page_words=ppw,
+            provider=req.ai_provider or "deepseek",
             samples=max(1, min(5, req.ai_samples)),
         )
     except Exception as exc:  # noqa: BLE001
