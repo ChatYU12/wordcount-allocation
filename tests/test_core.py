@@ -854,3 +854,114 @@ class TestAllowOver(unittest.TestCase):
             if seg["cooperative"]:
                 roles = set(m["role"] for m in seg["members"])
                 self.assertEqual(roles, {"主编", "副主编"})
+
+
+class TestAiAllocator(unittest.TestCase):
+    """AI 分配的校验逻辑（不实际调用模型）。"""
+
+    def setUp(self):
+        import sys
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
+        from ai_allocator import _build_prompt, _to_result, _validate
+        self.validate = _validate
+        self.to_result = _to_result
+        self.build_prompt = _build_prompt
+        self.units = [
+            {"index": i, "label": f"第{i+1}章", "kind": "task", "start": i * 10 + 1,
+             "end": (i + 1) * 10, "pages": 10, "words": 13000, "project_no": i // 2,
+             "figure_pages": 0}
+            for i in range(5)
+        ]
+        self.people = [
+            {"name": "甲", "role": "主编", "target_words": 30000, "allow_pair": True},
+            {"name": "乙", "role": "副主编", "target_words": 20000, "allow_pair": True},
+            {"name": "丙", "role": "副主编", "target_words": 20000, "allow_pair": True},
+        ]
+
+    def test_valid_passes(self):
+        segs = [
+            {"members": ["甲"], "from": 1, "to": 3},
+            {"members": ["乙"], "from": 4, "to": 4},
+            {"members": ["丙"], "from": 5, "to": 5},
+        ]
+        ok, err = self.validate(segs, self.units, self.people)
+        self.assertTrue(ok, err)
+
+    def test_gap_rejected(self):
+        segs = [
+            {"members": ["甲"], "from": 1, "to": 2},
+            {"members": ["乙"], "from": 4, "to": 4},   # 缺第 3 章
+            {"members": ["丙"], "from": 5, "to": 5},
+        ]
+        ok, err = self.validate(segs, self.units, self.people)
+        self.assertFalse(ok)
+        self.assertIn("不连续", err)
+
+    def test_missing_people_rejected(self):
+        segs = [
+            {"members": ["甲"], "from": 1, "to": 3},
+            {"members": ["乙"], "from": 4, "to": 5},
+        ]
+        ok, err = self.validate(segs, self.units, self.people)
+        self.assertFalse(ok)
+        self.assertIn("没被分配", err)
+
+    def test_duplicate_person_rejected(self):
+        segs = [
+            {"members": ["甲"], "from": 1, "to": 2},
+            {"members": ["甲"], "from": 3, "to": 4},
+            {"members": ["乙"], "from": 5, "to": 5},
+        ]
+        ok, err = self.validate(segs, self.units, self.people)
+        self.assertFalse(ok)
+        self.assertIn("多段", err)
+
+    def test_bad_pair_rejected(self):
+        segs = [
+            {"members": ["乙", "丙"], "from": 1, "to": 3},   # 副主编+副主编
+            {"members": ["甲"], "from": 4, "to": 5},
+        ]
+        ok, err = self.validate(segs, self.units, self.people)
+        self.assertFalse(ok)
+        self.assertIn("只允许主编+副主编", err)
+
+    def test_good_pair_allowed(self):
+        segs = [
+            {"members": ["甲", "乙"], "from": 1, "to": 3},   # 主编+副主编
+            {"members": ["丙"], "from": 4, "to": 5},
+        ]
+        ok, err = self.validate(segs, self.units, self.people)
+        self.assertTrue(ok, err)
+
+    def test_to_result_converts_pages(self):
+        segs = [
+            {"members": ["甲"], "from": 1, "to": 3},
+            {"members": ["乙"], "from": 4, "to": 4},
+            {"members": ["丙"], "from": 5, "to": 5},
+        ]
+        res = self.to_result(segs, self.units, self.people, 1300, "test-model")
+        self.assertEqual(len(res["segments"]), 3)
+        self.assertEqual(res["segments"][0]["start"], 1)
+        self.assertEqual(res["segments"][0]["end"], 30)
+        self.assertEqual(res["segments"][0]["pages"], 30)
+        self.assertEqual(res["segments"][0]["words"], 39000)
+        self.assertEqual(res["mode"], "ai")
+        self.assertEqual(res["total_words"], 65000)
+
+    def test_prompt_mentions_big_task(self):
+        """章节大到超过任何人的配额时，提示里要点名让它用联合编写。"""
+        units = [
+            {"index": 0, "label": "小章节", "kind": "task", "start": 1, "end": 10,
+             "pages": 10, "words": 13000, "project_no": 1, "figure_pages": 0},
+            {"index": 1, "label": "超大章节", "kind": "task", "start": 11, "end": 60,
+             "pages": 50, "words": 65000, "project_no": 1, "figure_pages": 0},
+        ]
+        text = self.build_prompt(units, self.people, 1300)
+        self.assertIn("联合承担", text, "超大章节应被点名")
+        self.assertIn("超大章节", text)
+        self.assertIn("只允许「主编 + 副主编」", text)
+
+    def test_prompt_omits_big_note_when_uniform(self):
+        """章节都不大时不该出现「必须联合承担」的提示。"""
+        text = self.build_prompt(self.units, self.people, 1300)
+        self.assertNotIn("必须由「主编 + 副主编」联合承担", text)

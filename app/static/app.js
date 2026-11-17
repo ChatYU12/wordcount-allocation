@@ -677,6 +677,15 @@ function renderResult() {
   // 偏差降不下去的诊断
   (r.diagnosis || []).forEach((line) => add('warn', '!', escapeAttr(line)));
 
+  if (r.mode === 'ai') {
+    const b = ((r.best_bound || 0) * 100).toFixed(1);
+    add('warn', '🤖',
+      `本方案由 ${r.model || 'AI'} 生成：最大偏差 ${b}%（采样 ${r.samples || 1} 次取优）。` +
+      `模型负责「把章节分给谁」，页码、字数、偏差都在本地核算。`);
+    add('info', 'i',
+      `AI 的数值平衡不如算法：同样一本书，算法只要 3 秒就能做到 ±17%，AI 通常要 30–60 秒且偏差更大。` +
+      `如果要更精确的方案，点「生成分配方案」用算法再算一次，两份方案可以对比着挑。`);
+  }
   if (r.mode === 'under_bound') {
     const mu = ((r.max_under || 0) * 100).toFixed(1);
     const mo = ((r.max_over || 0) * 100).toFixed(1);
@@ -768,6 +777,43 @@ function clearResultPanel() {
   ['#exportBtn', '#copyBtn'].forEach((sel) => {
     const el = $(sel);
     if (el) el.disabled = true;
+  });
+}
+
+/* ---------------- 用 AI 分配 ---------------- */
+function bindAiAllocate() {
+  const btn = $('#aiBtn');
+  if (!btn) return;
+  btn.addEventListener('click', async () => {
+    if (!state.units.length) return toast('请先导入书稿');
+    if (!state.people.length) return toast('请先填编写名单');
+    const label = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = 'AI 思考中…';
+    const note = $('#resultHint');
+    const old = note.textContent;
+    note.textContent = 'AI 正在读章节和名单，通常要 30–60 秒';
+    try {
+      const res = await fetch('/api/ai-allocate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...payload(), ai_samples: 2 }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'AI 分配失败');
+      state.result = data;
+      renderResult();
+      $('#exportBtn').disabled = false;
+      $('#copyBtn').disabled = false;
+      $('#resultHint').textContent = `AI 方案：最大偏差 ${(data.best_bound * 100).toFixed(1)}%`;
+      toast(`AI 已给出方案，最大偏差 ${(data.best_bound * 100).toFixed(1)}%`);
+    } catch (err) {
+      note.textContent = old;
+      toast('AI 分配失败：' + err.message);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = label;
+    }
   });
 }
 
@@ -1120,6 +1166,7 @@ function bind() {
   $('#demoBtn').addEventListener('click', (e) => { e.stopPropagation(); loadDemo(); });
   $('#runBtn').addEventListener('click', runAllocate);
   $('#exportBtn').addEventListener('click', doExport);
+  bindAiAllocate();
   $('#copyBtn').addEventListener('click', doCopy);
 }
 

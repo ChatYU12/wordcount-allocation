@@ -32,6 +32,7 @@ from allocator import (  # noqa: E402
 from excel_export import build_workbook  # noqa: E402
 from pdf_parser import parse_book  # noqa: E402
 from people_import import build_people_template, parse_people_csv, parse_people_xlsx  # noqa: E402
+from ai_allocator import available as ai_available, ai_allocate  # noqa: E402
 from cover_parser import IMAGE_EXTS, parse_cover  # noqa: E402
 from policy import build_initial_people, suggest_members  # noqa: E402
 
@@ -162,6 +163,8 @@ class AllocateRequest(BaseModel):
     hours_per_1000: float = 1.0
     # 允许超额：只约束欠额，超额不限（业务上「多写没关系，少写不行」）
     allow_over: bool = False
+    # AI 分配：采样次数（模型每次输出不同，多采几次取最优）
+    ai_samples: int = 2
     # 任务书
     book_title: str = ""
     deadline: str = ""
@@ -461,6 +464,49 @@ def _diagnose_granularity(units: List[Dict], res: Dict) -> List[str]:
             f"在「任务不可拆」的前提下，这已经是本稿能达到的最好结果。"
         )
     return out
+
+
+@app.get("/api/ai-status")
+def ai_status() -> JSONResponse:
+    """前端用来决定是否显示「用 AI 分配」按钮。"""
+    return JSONResponse({"available": ai_available()})
+
+
+@app.post("/api/ai-allocate")
+def ai_alloc(req: AllocateRequest) -> JSONResponse:
+    """让大模型做分工，本地校验并核算字数。"""
+    by_average = bool(req.total_words and req.total_words > 0) or req.calibrate
+    units = _prepare_units(
+        [u.model_dump() for u in req.units], req.use_figure_discount and not by_average
+    )
+    people = [p.model_dump() for p in req.people]
+    if not units or not people:
+        raise HTTPException(400, "缺少单元或人员数据")
+
+    total_pages = sum(u["pages"] for u in units) or 1
+    if req.total_words and req.total_words > 0:
+        scaled = distribute_words(units, req.total_words)
+        ppw = round(req.total_words / total_pages)
+    elif req.calibrate:
+        scaled = distribute_words(units, sum(p["target_words"] for p in people))
+        ppw = round(sum(p["target_words"] for p in people) / total_pages)
+    else:
+        scaled = rescale_units(units, req.per_page_words)
+        ppw = req.per_page_words
+
+    try:
+        res = ai_allocate(
+            scaled, people, per_page_words=ppw,
+            samples=max(1, min(5, req.ai_samples)),
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(400, str(exc)) from exc
+
+    res["per_page_words"] = ppw
+    res["body_pages"] = total_pages
+    res["units"] = scaled
+    res["hours_per_1000"] = req.hours_per_1000
+    return JSONResponse(res)
 
 
 @app.post("/api/optimize-order")
