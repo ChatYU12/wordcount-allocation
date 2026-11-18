@@ -269,19 +269,10 @@ async def parse_cover_file(file: UploadFile = File(...)) -> JSONResponse:
     if len(data) > 60 * 1024 * 1024:
         raise HTTPException(400, "文件过大（>60MB）")
 
-    suffix = os.path.splitext(name)[1] or ".png"
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
     try:
-        tmp.write(data)
-        tmp.close()
-        result = parse_cover(tmp.name, filename=file.filename or "")
+        result = parse_cover(filename=file.filename or "", data=data)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(500, f"扉页识别失败：{exc}") from exc
-    finally:
-        try:
-            os.unlink(tmp.name)
-        except OSError:
-            pass
 
     result["filename"] = file.filename
     if not result.get("ok"):
@@ -320,16 +311,7 @@ async def import_people(file: UploadFile = File(...)) -> JSONResponse:
     if name.endswith(".csv"):
         result = parse_people_csv(data)
     else:
-        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx")
-        try:
-            tmp.write(data)
-            tmp.close()
-            result = parse_people_xlsx(tmp.name)
-        finally:
-            try:
-                os.unlink(tmp.name)
-            except OSError:
-                pass
+        result = parse_people_xlsx(data=data)
     result["filename"] = file.filename
     return JSONResponse(result)
 
@@ -349,13 +331,11 @@ async def parse_pdf(
     if len(data) > 200 * 1024 * 1024:
         raise HTTPException(400, "文件过大（>200MB）")
 
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
     try:
-        tmp.write(data)
-        tmp.close()
         t0 = time.time()
+        # 全程内存解析，不写临时文件
         result = parse_book(
-            tmp.name, per_page_words=per_page_words, include_ref=include_ref,
+            pdf_bytes=data, per_page_words=per_page_words, include_ref=include_ref,
             split_sections=split_sections, min_section_pages=min_section_pages,
             total_pages_override=(total_pages if total_pages and total_pages > 0 else None),
         )
@@ -375,12 +355,6 @@ async def parse_pdf(
         return JSONResponse(result)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(500, f"解析失败：{exc}") from exc
-    finally:
-        # 解析完立刻删掉临时文件，不在磁盘留书稿副本
-        try:
-            os.unlink(tmp.name)
-        except OSError:
-            pass
 
 
 @app.post("/api/allocate")

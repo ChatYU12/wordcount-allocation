@@ -600,7 +600,7 @@ def measure_real_chars(
 # ---------- 对外主入口 ----------
 
 def parse_book(
-    pdf_path: str,
+    pdf_path: Optional[str] = None,
     per_page_words: int = 1200,
     include_ref: bool = False,
     toc_pages: Optional[List[int]] = None,
@@ -609,13 +609,21 @@ def parse_book(
     split_sections: bool = False,
     min_section_pages: int = 1,
     total_pages_override: Optional[int] = None,
+    pdf_bytes: Optional[bytes] = None,
 ) -> Dict:
     """解析整本书，返回结构化结果（可直接交给前端编辑）。
+
+    pdf_bytes 直接从内存解析，不落盘——部署到服务器后走这条路。
 
     total_pages_override：只上传了前若干页（大文件省流量）时，用原书总页数
     覆盖实际页数，否则正文末尾会被算短。
     """
-    doc = fitz.open(pdf_path)
+    if pdf_bytes is not None:
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    elif pdf_path:
+        doc = fitz.open(pdf_path)
+    else:
+        raise ValueError("必须提供 pdf_path 或 pdf_bytes")
     local_pages = doc.page_count
     pages_total = total_pages_override or local_pages
     # 只提取一次全文文本，后续所有统计复用（避免 300+ 页重复解析）

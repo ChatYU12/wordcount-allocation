@@ -148,6 +148,11 @@ def cluster_rows(items: List[Tuple[float, float, str]], tol: float = 0.02) -> Li
     return out
 
 
+def _rows_from_text(text: str) -> List[List[str]]:
+    """把 OCR 出来的纯文本按行拆成单元格（云端识别用这个）。"""
+    return text_to_rows(text)
+
+
 def text_to_rows(text: str) -> List[List[str]]:
     """纯文本按行切分，行内按全角/半角空白拆词。"""
     rows = []
@@ -196,6 +201,26 @@ def expand_row(row: List[str]) -> List[str]:
             out.append(compact)      # 姓名内部空格：「杨 丽」→「杨丽」
         else:
             out.extend(parts)        # 多个姓名或「角色 姓名」：「周五湖 吴六桥」→ 两个
+    return out
+
+
+def merge_single_chars(cells: List[str]) -> List[str]:
+    """把被拆成单字的姓名两两合回去。
+
+    模型有时输出「朱　娟　王　静」——每个字都被空格分开。
+    中文姓名多为 2–3 字，连续的单字按 2 个一组合并即可。
+    """
+    out: List[str] = []
+    i = 0
+    n = len(cells)
+    while i < n:
+        cur = cells[i]
+        if len(cur) == 1 and i + 1 < n and len(cells[i + 1]) == 1:
+            out.append(cur + cells[i + 1])
+            i += 2
+        else:
+            out.append(cur)
+            i += 1
     return out
 
 
@@ -268,7 +293,7 @@ def parse_rows(rows: List[List[str]]) -> Dict:
     for row in rows:
         if not row:
             continue
-        cells = merge_role_tokens(expand_row(row))
+        cells = merge_single_chars(merge_role_tokens(expand_row(row)))
         if not cells:
             continue
         first = cells[0]
@@ -328,6 +353,25 @@ def _rows_from_image(path: str) -> List[List[str]]:
     return cluster_rows(ocr_image(path))
 
 
+def _rows_from_image_bytes(data: bytes) -> Tuple[List[List[str]], str]:
+    """图片字节 → 行结构。优先云端视觉模型，失败回退 macOS Vision。"""
+    try:
+        from ocr_cloud import ocr_image as cloud_ocr  # noqa: PLC0415
+        return cloud_ocr(data)
+    except Exception:  # noqa: BLE001
+        # 本机有 Vision 就走本地
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
+        tmp.write(data)
+        tmp.close()
+        try:
+            return _rows_from_image(tmp.name), "macos-vision"
+        finally:
+            try:
+                os.unlink(tmp.name)
+            except OSError:
+                pass
+
+
 def _rows_from_pdf(path: str, max_pages: int = 20) -> Tuple[List[List[str]], int]:
     """PDF：优先用文字层，没有就渲染成图 OCR。返回 (行, 用到的页码 1-based)。"""
     try:
@@ -371,27 +415,58 @@ def _rows_from_pdf(path: str, max_pages: int = 20) -> Tuple[List[List[str]], int
 IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".heic", ".heif", ".tif", ".tiff", ".bmp", ".webp")
 
 
-def parse_cover(path: str, filename: str = "") -> Dict:
-    """解析扉页文件，返回 {ok, title, authors, rows, page, warnings, error}。"""
+def parse_cover(path: str = "", filename: str = "", data: Optional[bytes] = None) -> Dict:
+    """解析扉页，返回 {ok, title, authors, rows, page, warnings, error}。
+
+    data 直接给字节时全程在内存里处理，不落盘（部署到服务器后这样用）。
+    """
     name = (filename or path).lower()
+    engine = ""
     if name.endswith(".pdf"):
-        rows, page = _rows_from_pdf(path)
+        if data is not None:
+            doc = fitz.open(stream=data, filetype="pdf")
+            try:
+                tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
+                tmp.write(data)
+                tmp.close()
+                rows, page = _rows_from_pdf(tmp.name)
+            finally:
+                doc.close()
+                try:
+                    os.unlink(tmp.name)
+                except OSError:
+                    pass
+        else:
+            rows, page = _rows_from_pdf(path)
         source = "pdf"
     elif name.endswith(IMAGE_EXTS):
-        rows = _rows_from_image(path)
+        if data is not None:
+            rows, engine = _rows_from_image_bytes(data)
+        else:
+            rows = _rows_from_image(path)
+            engine = "macos-vision"
         page = 1
         source = "image"
     else:
-        rows = text_to_rows(open(path, encoding="utf-8", errors="ignore").read())
+        raw = data.decode("utf-8", "ignore") if data is not None else open(
+            path, encoding="utf-8", errors="ignore").read()
+        rows = text_to_rows(raw)
         page = 1
         source = "text"
 
     parsed = parse_rows(rows)
     if not parsed["authors"]:
         if source == "image" and not ocr_available():
+            try:
+                from ocr_cloud import cloud_available  # noqa: PLC0415
+                cloud_ok = cloud_available()
+            except Exception:  # noqa: BLE001
+                cloud_ok = False
             msg = (
-                "当前系统不支持图片文字识别（仅 macOS 可用）。"
-                "请改为上传含扉页的 PDF，或直接在名单表里手动录入。"
+                "没能识别出扉页文字（云端视觉模型不可用）。"
+                "请检查网络与模型凭据，或改为上传含扉页的 PDF、直接在名单表里手动录入。"
+                if not cloud_ok else
+                "这张图里没识别出编写名单。请确认图上有「主审 / 主编 / 副主编 / 参编」等角色字样，且文字清晰。"
             )
         else:
             msg = (
@@ -400,4 +475,6 @@ def parse_cover(path: str, filename: str = "") -> Dict:
             )
         return {"ok": False, "source": source, "rows": rows, "error": msg}
     parsed.update({"ok": True, "source": source, "page": page, "rows": rows})
+    if engine:
+        parsed["engine"] = engine
     return parsed

@@ -138,10 +138,16 @@ def _rows_to_people(rows: List[Tuple], cols: Dict[str, int]) -> List[Dict]:
     return people
 
 
-def parse_people_xlsx(path: str) -> Dict:
-    """解析 xlsx 名单，返回 {ok, people, sheet, columns, warnings}。"""
+def parse_people_xlsx(path: str = "", data: Optional[bytes] = None) -> Dict:
+    """解析 xlsx 名单，返回 {ok, people, sheet, columns, warnings}。
+
+    data 直接给字节时在内存里解析，不落盘。
+    """
     try:
-        wb = load_workbook(path, data_only=True)
+        if data is not None:
+            wb = load_workbook(io.BytesIO(data), data_only=True)
+        else:
+            wb = load_workbook(path, data_only=True)
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": f"无法打开 Excel 文件：{exc}"}
 
