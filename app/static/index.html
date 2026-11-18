@@ -71,13 +71,28 @@
         <input type="checkbox" id="splitSections" />
         <span>按小节拆分（偏差更小）</span>
       </label>
+      <label class="field checkbox" title="先保证每个人都不低于目标字数，再压小超额（可能无解，需配合拆任务）">
+        <input type="checkbox" id="noUnder" />
+        <span>绝不少写</span>
+      </label>
       <label class="field checkbox" title="只保证「不少写」，多写不算问题；欠额能压到最小">
         <input type="checkbox" id="allowOver" />
-        <span>允许超额（优先保证不少写）</span>
+        <span>允许超额</span>
       </label>
       <label class="field checkbox" title="勾选后每个人只在一个项目内工作；不勾则允许跨项目（偏差更小）">
         <input type="checkbox" id="noCrossProject" />
         <span>每人限定在一个项目内</span>
+      </label>
+      <label class="field">
+        <span class="lbl">任务超过</span>
+        <select id="maxTaskPages">
+          <option value="0">不拆分任务</option>
+          <option value="20">20 页拆开</option>
+          <option value="10">10 页拆开</option>
+          <option value="5" selected>5 页拆开</option>
+          <option value="3">3 页拆开</option>
+        </select>
+        <em class="tip">超大任务会按页均分，代价是任务不再完整</em>
       </label>
     </div>
 

@@ -507,24 +507,32 @@ def _best_split_index(words: List[int], want: float) -> int:
 def pair_split_quality(
     units: List[Dict], unit_idx: List[int], members: List[Dict]
 ) -> Tuple[Optional[int], float]:
-    """评估一段合作能否公平切开：返回 (切点下标, 两人中较差的偏差比例)。
+    """评估一段合作能否公平切开：返回 (切点下标, 两人中较差的偏差比例)。"""
+    k, dev_a, dev_b = pair_split_detail(units, unit_idx, members)
+    return k, max(abs(dev_a), abs(dev_b))
+
+
+def pair_split_detail(
+    units: List[Dict], unit_idx: List[int], members: List[Dict]
+) -> Tuple[Optional[int], float, float]:
+    """返回 (切点下标, 第一个人带符号偏差, 第二个人带符号偏差)。
 
     切点只能落在任务边界上。如果这段里有一个任务特别大，无论怎么切都会
     一边超很多、另一边欠很多，这种「假合作」应当避免。
     """
     if len(members) != 2 or len(unit_idx) < 2:
-        return None, 1.0
+        return None, 1.0, 1.0
     t0 = max(0, members[0].get("target_words") or 0)
     t1 = max(0, members[1].get("target_words") or 0)
     if t0 + t1 <= 0:
-        return None, 1.0
+        return None, 1.0, 1.0
     words = [units[x].get("words") or 0 for x in unit_idx]
     k = _best_split_index(words, t0 / (t0 + t1))
     a = sum(words[:k])
     b = sum(words[k:])
-    dev_a = abs(a - t0) / t0 if t0 else 1.0
-    dev_b = abs(b - t1) / t1 if t1 else 1.0
-    return k, max(dev_a, dev_b)
+    dev_a = (a - t0) / t0 if t0 else 1.0
+    dev_b = (b - t1) / t1 if t1 else 1.0
+    return k, dev_a, dev_b
 
 
 def pair_split_ok(units: List[Dict], k: int, i: int,
@@ -792,10 +800,15 @@ def allocate_under_bound(
                     if not (-under_bound <= r <= over_cap):
                         continue
                     # 合作段按两人各自的偏差判断，避免「段合计合规、个人超标」
-                    _, dev = pair_split_quality(
+                    _, da, db = pair_split_detail(
                         units, list(range(k, i)), [people[t - 2], p]
                     )
-                    if dev > PAIR_SPLIT_MAX_DEV:
+                    # 段内两人都要满足约束，而不是只看段合计
+                    if max(abs(da), abs(db)) > PAIR_SPLIT_MAX_DEV:
+                        continue
+                    if min(da, db) < -under_bound - 1e-9:
+                        continue
+                    if max(da, db) > over_cap + 1e-9:
                         continue
                     dp[t][i] = (k, "pair", t - 1)
                     break
@@ -1063,3 +1076,130 @@ def summarize_projects(segments: List[Dict], units: List[Dict]) -> List[Dict]:
             ],
         })
     return out
+
+
+def split_large_tasks(units: List[Dict], max_pages: int, per_page_words: int) -> List[Dict]:
+    """把超过 max_pages 页的任务按页均分成若干小块。
+
+    默认不开——业务上任务应当完整。但当某个任务大到超过任何人配额时，
+    不拆就只能让某个人严重超标或严重不足，此时拆开反而更公平。
+    """
+    if not max_pages or max_pages <= 0:
+        return [dict(u) for u in units]
+    out: List[Dict] = []
+    for u in units:
+        pages = u.get("pages") or 0
+        if pages <= max_pages:
+            out.append(dict(u))
+            continue
+        n = -(-pages // max_pages)          # 向上取整
+        base, rem = divmod(pages, n)
+        cur = u["start"]
+        total_words = u.get("words") or pages * per_page_words
+        given = 0
+        for k in range(n):
+            size = base + (1 if k < rem else 0)
+            v = dict(u)
+            v["start"] = cur
+            v["end"] = cur + size - 1
+            v["pages"] = size
+            # 按原单元字数等比例分配，最后一块补齐余数，保证拆分前后总字数不变
+            if k == n - 1:
+                v["words"] = total_words - given
+            else:
+                v["words"] = int(round(total_words * size / pages))
+                given += v["words"]
+            v["label"] = f"{u['label']}（{k + 1}/{n}）"
+            v["split_from"] = u["label"]
+            out.append(v)
+            cur += size
+    for i, u in enumerate(out):
+        u["index"] = i
+    return out
+
+
+def solve_no_under(
+    units: List[Dict],
+    people: List[Dict],
+    over_caps: Optional[List[float]] = None,
+    under_ladder: Optional[List[float]] = None,
+    max_orders: int = 3000,
+) -> Dict:
+    """「绝不少写」口径：先保证每个人都不低于目标，再尽量压小超额。
+
+    做法：外层放松超额上限、内层搜索名单顺序，找到第一个可行解；
+    如果连有欠额都不允许仍然无解，才逐级放宽欠额（0 → 1% → 2% …）。
+    """
+    workable = [p for p in people if (p.get("target_words") or 0) > 0]
+    if len(workable) < 2:
+        raise ValueError("至少需要两位有字数的编写人")
+
+    if over_caps is None:
+        over_caps = [0.05, 0.08, 0.10, 0.12, 0.15, 0.20, 0.25, 0.30, 0.40, 0.60]
+    if under_ladder is None:
+        under_ladder = [0.0, 0.01, 0.02, 0.03, 0.05, 0.08, 0.12, 0.20]
+
+    groups = _group_people(workable)
+    orders = _multiset_orders(groups)
+    if len(orders) > max_orders:
+        step = len(orders) / max_orders
+        orders = [orders[int(i * step)] for i in range(max_orders)]
+
+    def deviations(res: Dict) -> List[float]:
+        out: List[float] = []
+        for seg in res["segments"]:
+            got = seg.get("assignments")
+            if got:
+                out.extend(
+                    (x["words"] - x["target"]) / x["target"]
+                    for x in got if x.get("target")
+                )
+            else:
+                out.append(seg["delta_ratio"])
+        return out
+
+    for ub in under_ladder:
+        for cap in over_caps:
+            best = None
+            for seq in orders:
+                picks = [0] * len(groups)
+                cand: List[Dict] = []
+                for gi in seq:
+                    cand.append(groups[gi][1][picks[gi]])
+                    picks[gi] += 1
+                try:
+                    res = allocate_under_bound(
+                        units, cand, under_bound=ub, over_cap=cap
+                    )
+                except Exception:  # noqa: BLE001
+                    continue
+                devs = deviations(res)
+                if not devs or min(devs) < -ub - 1e-9:
+                    continue
+                worst = max(devs)
+                if best is None or worst < best[0]:
+                    best = (worst, res, cand)
+            if best is not None:
+                res = best[1]
+                res["mode"] = "no_under"
+                res["under_bound_used"] = ub
+                res["over_cap_used"] = cap
+                res["optimized"] = {
+                    "order": [
+                        {"name": p["name"], "role": p["role"],
+                         "target_words": p["target_words"]}
+                        for p in best[2]
+                    ],
+                    "searched": len(orders),
+                    "truncated": len(orders) >= max_orders,
+                }
+                res["warnings"].insert(
+                    0,
+                    f"按「绝不少写」口径：最多少写 {ub * 100:.0f}%，实际个人偏差 "
+                    f"{min(deviations(res)) * 100:+.1f}% ~ {max(deviations(res)) * 100:+.1f}%。",
+                )
+                return res
+
+    raise ValueError(
+        "在这本书的章节结构下无法做到「每个人都不少写」，建议放宽到允许少量欠额，或拆分任务。"
+    )

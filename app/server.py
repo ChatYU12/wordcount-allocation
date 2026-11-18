@@ -27,7 +27,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from allocator import (  # noqa: E402
     allocate_best, allocate_under_bound, best_under_bound, distribute_words,
     infer_per_page_words, optimize_order, optimize_under_bound, rescale_units,
-    solve_allow_over, summarize_projects,
+    solve_allow_over, solve_no_under, split_large_tasks, summarize_projects,
 )
 from excel_export import build_workbook  # noqa: E402
 from pdf_parser import parse_book  # noqa: E402
@@ -167,6 +167,10 @@ class AllocateRequest(BaseModel):
     allow_over: bool = False
     # 限制每个人只在一个项目内（默认允许跨项目）
     no_cross_project: bool = False
+    # 超过这么多页的任务会被拆开（0 表示不拆）
+    max_task_pages: int = 0
+    # 绝不少写：先保证每个人不低于目标，再压小超额
+    no_under: bool = False
     # AI 分配：采样次数与提供方（deepseek / local）
     ai_samples: int = 2
     ai_provider: str = "deepseek"
@@ -393,8 +397,8 @@ def allocate(req: AllocateRequest) -> JSONResponse:
     ppw = req.per_page_words
     _need_total = sum(p["target_words"] for p in people)
     total_pages = sum(u["pages"] for u in units) or 1
+    # 先确定字数口径并分摊，再拆任务——否则拆出来的块会用到错的每页字数
     if req.total_words and req.total_words > 0:
-        # 用户手动指定全书总字数：按页数比例精确分摊
         scaled = distribute_words(units, req.total_words)
         ppw = round(req.total_words / total_pages)
         notes.append(f"全书总字数按手动输入 {req.total_words:,} 字，按页数比例分摊到各单元（约 {ppw} 字/页）")
@@ -405,8 +409,18 @@ def allocate(req: AllocateRequest) -> JSONResponse:
         notes.append(f"全书总字数按名单需求合计 {target_total:,} 字分摊（约 {ppw} 字/页）")
     else:
         scaled = rescale_units(units, ppw)
+
+    if req.max_task_pages and req.max_task_pages > 0:
+        before = len(scaled)
+        scaled = split_large_tasks(scaled, req.max_task_pages, ppw)
+        if len(scaled) > before:
+            notes.append(
+                f"已把超过 {req.max_task_pages} 页的任务拆开：{before} → {len(scaled)} 个单元。"
+            )
     try:
-        if req.allow_over:
+        if req.no_under:
+            res = solve_no_under(scaled, people)
+        elif req.allow_over:
             res = solve_allow_over(scaled, people, no_cross_project=req.no_cross_project)
             res["by_average"] = by_average
             res["avg_words_per_page"] = round(
