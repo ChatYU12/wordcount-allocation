@@ -1061,6 +1061,34 @@ class TestNoCrossProject(unittest.TestCase):
             start += pages
         return out
 
+    def test_cross_project_allowed_by_default(self):
+        """默认允许跨项目（尽量把偏差压小）。"""
+        import sys
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
+        from allocator import allocate_best
+        units = self._units()
+        people = [
+            {"name": "甲", "role": "主编", "target_words": 26000, "allow_pair": True},
+        ]
+        res = allocate_best(units, people, tolerance=0.9)
+        seg = res["segments"][0]
+        self.assertTrue(seg.get("cross_project"), "默认不清项目边界，允许整段跨项目")
+
+    def test_switch_blocks_cross_project(self):
+        """打开开关后必须落在单个项目内。"""
+        import sys
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
+        from allocator import allocate_best
+        units = self._units()
+        people = [
+            {"name": "甲", "role": "主编", "target_words": 26000, "allow_pair": True},
+            {"name": "乙", "role": "副主编", "target_words": 26000, "allow_pair": True},
+        ]
+        res = allocate_best(units, people, tolerance=0.9, no_cross_project=True)
+        proj = {u["index"]: u["project_no"] for u in units}
+        for seg in res["segments"]:
+            self.assertEqual(len({proj[i] for i in seg["unit_idx"]}), 1)
+
     def test_segments_stay_within_one_project(self):
         import sys
         sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
@@ -1070,7 +1098,7 @@ class TestNoCrossProject(unittest.TestCase):
             {"name": "甲", "role": "主编", "target_words": 26000, "allow_pair": True},
             {"name": "乙", "role": "副主编", "target_words": 26000, "allow_pair": True},
         ]
-        res = allocate_best(units, people, tolerance=0.5)
+        res = allocate_best(units, people, tolerance=0.5, no_cross_project=True)
         proj = {u["index"]: u["project_no"] for u in units}
         for seg in res["segments"]:
             nos = {proj[i] for i in seg["unit_idx"]}
@@ -1087,7 +1115,7 @@ class TestNoCrossProject(unittest.TestCase):
             {"name": "乙", "role": "副主编", "target_words": 20000, "allow_pair": True},
             {"name": "丙", "role": "副主编", "target_words": 12000, "allow_pair": True},
         ]
-        res = allocate_best(units, people, tolerance=0.5)
+        res = allocate_best(units, people, tolerance=0.5, no_cross_project=True)
         covered = [i for seg in res["segments"] for i in seg["unit_idx"]]
         self.assertEqual(sorted(covered), [0, 1, 2, 3])   # 全覆盖
         proj = {u["index"]: u["project_no"] for u in units}
@@ -1106,7 +1134,7 @@ class TestNoCrossProject(unittest.TestCase):
             {"name": "丙", "role": "副主编", "target_words": 13000, "allow_pair": True},
             {"name": "丁", "role": "副主编", "target_words": 13000, "allow_pair": True},
         ]
-        res = allocate_best(units, people, tolerance=0.5)
+        res = allocate_best(units, people, tolerance=0.5, no_cross_project=True)
         groups = summarize_projects(res["segments"], units)
         self.assertEqual(len(groups), 2)                 # 两个项目
         for g in groups:

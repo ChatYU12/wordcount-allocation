@@ -555,6 +555,7 @@ function payload(extra = {}) {
     tolerance: parseFloat($('#tol').value) / 100,
     calibrate: state.mode === 'target',
     allow_over: $('#allowOver') ? $('#allowOver').checked : false,
+    no_cross_project: $('#noCrossProject') ? $('#noCrossProject').checked : false,
     total_words: state.mode === 'total' ? (parseInt($('#totalWords').value, 10) || 0) : null,
     use_figure_discount: $('#figureDiscount') ? $('#figureDiscount').checked : true,
     hours_per_1000: parseFloat($('#hoursPerK') ? $('#hoursPerK').value : '1') || 0,

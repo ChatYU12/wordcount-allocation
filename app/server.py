@@ -165,6 +165,8 @@ class AllocateRequest(BaseModel):
     hours_per_1000: float = 1.0
     # 允许超额：只约束欠额，超额不限（业务上「多写没关系，少写不行」）
     allow_over: bool = False
+    # 限制每个人只在一个项目内（默认允许跨项目）
+    no_cross_project: bool = False
     # AI 分配：采样次数与提供方（deepseek / local）
     ai_samples: int = 2
     ai_provider: str = "deepseek"
@@ -367,7 +369,7 @@ def allocate(req: AllocateRequest) -> JSONResponse:
         scaled = rescale_units(units, ppw)
     try:
         if req.allow_over:
-            res = solve_allow_over(scaled, people)
+            res = solve_allow_over(scaled, people, no_cross_project=req.no_cross_project)
             res["by_average"] = by_average
             res["avg_words_per_page"] = round(
                 (req.total_words or sum(p["target_words"] for p in people)) / total_pages, 1
@@ -381,6 +383,7 @@ def allocate(req: AllocateRequest) -> JSONResponse:
                 under_weight=req.under_weight,
                 allowed_pairs=req.allowed_pairs,
                 boundary_penalty=req.boundary_penalty,
+                no_cross_project=req.no_cross_project,
             )
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(400, str(exc)) from exc
@@ -540,9 +543,11 @@ def optimize(req: AllocateRequest) -> JSONResponse:
 
     try:
         if req.allow_over:
-            res = optimize_under_bound(units, people, over_cap=2.0)
+            res = optimize_under_bound(units, people, over_cap=2.0,
+                                       no_cross_project=req.no_cross_project)
         else:
-            res = optimize_order(units, people, tolerance=req.tolerance)
+            res = optimize_order(units, people, tolerance=req.tolerance,
+                                 no_cross_project=req.no_cross_project)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(400, str(exc)) from exc
 
@@ -579,7 +584,7 @@ def export(req: AllocateRequest) -> StreamingResponse:
     else:
         scaled = rescale_units(units, ppw)
     if req.allow_over:
-        res = solve_allow_over(scaled, people)
+        res = solve_allow_over(scaled, people, no_cross_project=req.no_cross_project)
     else:
         res = allocate_best(
             scaled,
@@ -589,6 +594,7 @@ def export(req: AllocateRequest) -> StreamingResponse:
             under_weight=req.under_weight,
             allowed_pairs=req.allowed_pairs,
             boundary_penalty=req.boundary_penalty,
+            no_cross_project=req.no_cross_project,
         )
     buf: io.BytesIO = build_workbook(
         res, people, units=scaled, per_page_words=ppw,

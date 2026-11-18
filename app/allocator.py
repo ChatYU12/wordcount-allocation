@@ -114,6 +114,7 @@ def allocate(
     allowed_pairs: Optional[List[List[str]]] = None,
     boundary_penalty: float = 0.02,
     hard_bound: Optional[float] = None,
+    no_cross_project: bool = False,
 ) -> Dict:
     """给出一个分配方案。
 
@@ -197,7 +198,7 @@ def allocate(
                 base = f1[k]
                 if base == INF:
                     continue
-                if proj_of[k] != proj_of[i - 1]:
+                if no_cross_project and proj_of[k] != proj_of[i - 1]:
                     continue
                 w = wi - prefix[k]
                 if hb is not None:
@@ -219,7 +220,7 @@ def allocate(
                     base = f2[k]
                     if base == INF:
                         continue
-                    if proj_of[k] != proj_of[i - 1]:
+                    if no_cross_project and proj_of[k] != proj_of[i - 1]:
                         continue
                     w = wi - prefix[k]
                     if hb is not None:
@@ -363,6 +364,7 @@ def allocate_best(
     allowed_pairs: Optional[List[List[str]]] = None,
     boundary_penalty: float = 0.02,
     precision: float = 0.004,
+    no_cross_project: bool = False,
 ) -> Dict:
     """两阶段求解：先最小化「最大偏差」，再在该约束下最小化总偏差。
 
@@ -396,6 +398,7 @@ def allocate_best(
             allocate(
                 units, people, tolerance=mid, allowed_pairs=allowed_pairs,
                 boundary_penalty=0.0, hard_bound=mid,
+                no_cross_project=no_cross_project,
             )
             hi = mid
         except Infeasible:
@@ -408,12 +411,14 @@ def allocate_best(
             units, people, tolerance=best_bound, over_weight=over_weight,
             under_weight=under_weight, allowed_pairs=allowed_pairs,
             boundary_penalty=boundary_penalty, hard_bound=best_bound + 1e-9,
+            no_cross_project=no_cross_project,
         )
     except Infeasible:
         result = allocate(
             units, people, tolerance=best_bound, over_weight=over_weight,
             under_weight=under_weight, allowed_pairs=allowed_pairs,
             boundary_penalty=0.0, hard_bound=best_bound + 1e-9,
+            no_cross_project=no_cross_project,
         )
     result["best_bound"] = best_bound
     result["within_declared_tolerance"] = best_bound <= tolerance
@@ -669,6 +674,7 @@ def optimize_order(
     people: List[Dict],
     tolerance: float = 0.10,
     max_orders: int = 3000,
+    no_cross_project: bool = False,
 ) -> Dict:
     """自动搜索偏差最小的名单顺序。
 
@@ -696,7 +702,8 @@ def optimize_order(
             candidate.append(groups[gi][1][picks[gi]])
             picks[gi] += 1
         try:
-            res = allocate_best(units, candidate, tolerance=tolerance)
+            res = allocate_best(units, candidate, tolerance=tolerance,
+                                no_cross_project=no_cross_project)
         except Exception:  # noqa: BLE001
             continue
         if best is None or res["best_bound"] < best["best_bound"]:
@@ -724,6 +731,7 @@ def allocate_under_bound(
     over_cap: float = 1.5,
     allowed_pairs: Optional[List[List[str]]] = None,
     boundary_penalty: float = 0.02,
+    no_cross_project: bool = False,
 ) -> Dict:
     """单边优化：只约束欠额，超额只要不超过 over_cap 就接受。
 
@@ -755,7 +763,7 @@ def allocate_under_bound(
                 if dp[t - 1][k] is None:
                     continue
                 # 段不能跨项目：首尾必须属于同一个项目
-                if proj_of[k] != proj_of[i - 1]:
+                if no_cross_project and proj_of[k] != proj_of[i - 1]:
                     continue
                 w = prefix[i] - prefix[k]
                 r = (w - target) / target if target else 0.0
@@ -773,7 +781,7 @@ def allocate_under_bound(
                 for k in range(i):
                     if dp[t - 2][k] is None:
                         continue
-                    if proj_of[k] != proj_of[i - 1]:
+                    if no_cross_project and proj_of[k] != proj_of[i - 1]:
                         continue
                     w = prefix[i] - prefix[k]
                     r = (w - tt) / tt if tt else 0.0
@@ -860,6 +868,7 @@ def best_under_bound(
     min_bound: float = 0.01,
     max_bound: float = 0.30,
     over_cap: float = 1.5,
+    no_cross_project: bool = False,
 ) -> Dict:
     """二分出「能把最大欠额压到多小」，并返回该口径下的方案。"""
     lo, hi = min_bound, max_bound
@@ -867,7 +876,8 @@ def best_under_bound(
     for _ in range(14):
         mid = (lo + hi) / 2
         try:
-            res = allocate_under_bound(units, people, under_bound=mid, over_cap=over_cap)
+            res = allocate_under_bound(units, people, under_bound=mid,
+                                       over_cap=over_cap, no_cross_project=no_cross_project)
             best = res
             hi = mid
         except Exception:  # noqa: BLE001
@@ -885,6 +895,7 @@ def optimize_under_bound(
     over_cap: float = 2.0,
     max_orders: int = 3000,
     ladder: Optional[List[float]] = None,
+    no_cross_project: bool = False,
 ) -> Dict:
     """搜索「欠额最小」的名单顺序与方案。
 
@@ -918,7 +929,8 @@ def optimize_under_bound(
                 picks[gi] += 1
             try:
                 res = allocate_under_bound(
-                    units, candidate, under_bound=ub, over_cap=over_cap
+                    units, candidate, under_bound=ub, over_cap=over_cap,
+                    no_cross_project=no_cross_project,
                 )
             except Exception:  # noqa: BLE001
                 continue
@@ -943,7 +955,8 @@ def optimize_under_bound(
     for _ in range(10):
         mid = (lo + hi) / 2
         try:
-            r = allocate_under_bound(units, best_order, under_bound=mid, over_cap=over_cap)
+            r = allocate_under_bound(units, best_order, under_bound=mid,
+                                     over_cap=over_cap, no_cross_project=no_cross_project)
             refined = r
             hi = mid
         except Exception:  # noqa: BLE001
@@ -966,6 +979,7 @@ def solve_allow_over(
     units: List[Dict],
     people: List[Dict],
     over_cap: float = 2.0,
+    no_cross_project: bool = False,
 ) -> Dict:
     """「允许超额」口径的求解入口。
 
@@ -976,10 +990,12 @@ def solve_allow_over(
     # 注意界限不能放太宽——否则「当前顺序的差方案」会提前返回，挡住更优的顺序。
     for ub in (0.04, 0.05, 0.06, 0.07, 0.08, 0.09, 0.10, 0.12, 0.15):
         try:
-            return allocate_under_bound(units, people, under_bound=ub, over_cap=over_cap)
+            return allocate_under_bound(units, people, under_bound=ub,
+                                        over_cap=over_cap, no_cross_project=no_cross_project)
         except Exception:  # noqa: BLE001
             continue
-    return optimize_under_bound(units, people, over_cap=over_cap)
+    return optimize_under_bound(units, people, over_cap=over_cap,
+                                no_cross_project=no_cross_project)
 
 
 def summarize_projects(segments: List[Dict], units: List[Dict]) -> List[Dict]:
