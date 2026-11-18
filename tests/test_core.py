@@ -252,7 +252,7 @@ class TestSampleAllocation(unittest.TestCase):
         wb = openpyxl.load_workbook(io.BytesIO(data))
         self.assertEqual(
             wb.sheetnames,
-            ["分配总表", "按人汇总", "章节明细", "联合编写分工", "编写任务书", "计算说明"],
+            ["分配总表", "按人汇总", "章节明细", "按项目分工", "联合编写分工", "编写任务书", "计算说明"],
         )
 
 
@@ -751,7 +751,7 @@ class TestOptimizeOrder(unittest.TestCase):
         for i, pages in enumerate(spec):
             out.append({"index": i, "label": f"单元{i+1}", "kind": "task",
                         "start": start, "end": start + pages - 1, "pages": pages,
-                        "words": pages * 1300, "project_no": i, "figure_pages": 0})
+                        "words": pages * 1300, "project_no": i // 4, "figure_pages": 0})
             start += pages
         return out
 
@@ -799,7 +799,7 @@ class TestAllowOver(unittest.TestCase):
         for i, pages in enumerate(spec):
             out.append({"index": i, "label": f"单元{i+1}", "kind": "task",
                         "start": start, "end": start + pages - 1, "pages": pages,
-                        "words": pages * 1300, "project_no": i, "figure_pages": 0})
+                        "words": pages * 1300, "project_no": i // 4, "figure_pages": 0})
             start += pages
         return out
 
@@ -992,7 +992,7 @@ class TestPairSplitFairness(unittest.TestCase):
         for i, p in enumerate(pages_list):
             out.append({"index": i, "label": f"章{i+1}", "kind": "task", "start": start,
                         "end": start + p - 1, "pages": p, "words": p * 1300,
-                        "project_no": i, "figure_pages": 0})
+                        "project_no": i // 4, "figure_pages": 0})
             start += p
         return out
 
@@ -1045,3 +1045,71 @@ class TestPairSplitFairness(unittest.TestCase):
                 dev = abs(a["words"] - a["target"]) / a["target"]
                 self.assertLess(dev, 0.6,
                                 f"{a['name']} 在合作段内分得偏差 {dev*100:.0f}%，分工不合理")
+
+
+class TestNoCrossProject(unittest.TestCase):
+    """一个人（或一组）负责的范围不能跨项目。"""
+
+    def _units(self):
+        # 项目1：单元1-2；项目2：单元3-4
+        spec = [(10, 1), (10, 1), (10, 2), (10, 2)]
+        out, start = [], 1
+        for i, (pages, proj) in enumerate(spec):
+            out.append({"index": i, "label": f"章{i+1}", "kind": "task", "start": start,
+                        "end": start + pages - 1, "pages": pages, "words": pages * 1300,
+                        "project_no": proj, "figure_pages": 0})
+            start += pages
+        return out
+
+    def test_segments_stay_within_one_project(self):
+        import sys
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
+        from allocator import allocate_best
+        units = self._units()
+        people = [
+            {"name": "甲", "role": "主编", "target_words": 26000, "allow_pair": True},
+            {"name": "乙", "role": "副主编", "target_words": 26000, "allow_pair": True},
+        ]
+        res = allocate_best(units, people, tolerance=0.5)
+        proj = {u["index"]: u["project_no"] for u in units}
+        for seg in res["segments"]:
+            nos = {proj[i] for i in seg["unit_idx"]}
+            self.assertEqual(len(nos), 1, f"第 {seg['order']} 段跨了多个项目：{nos}")
+
+    def test_single_project_split_between_people(self):
+        """同一个项目内可以分给多个人，各写连续的一段。"""
+        import sys
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
+        from allocator import allocate_best
+        units = self._units()
+        people = [
+            {"name": "甲", "role": "主编", "target_words": 20000, "allow_pair": True},
+            {"name": "乙", "role": "副主编", "target_words": 20000, "allow_pair": True},
+            {"name": "丙", "role": "副主编", "target_words": 12000, "allow_pair": True},
+        ]
+        res = allocate_best(units, people, tolerance=0.5)
+        covered = [i for seg in res["segments"] for i in seg["unit_idx"]]
+        self.assertEqual(sorted(covered), [0, 1, 2, 3])   # 全覆盖
+        proj = {u["index"]: u["project_no"] for u in units}
+        for seg in res["segments"]:
+            self.assertEqual(len({proj[i] for i in seg["unit_idx"]}), 1)
+
+    def test_project_summary_groups_people(self):
+        """项目汇总要能说明每个项目由谁、分几段完成。"""
+        import sys
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
+        from allocator import allocate_best, summarize_projects
+        units = self._units()
+        people = [
+            {"name": "甲", "role": "主编", "target_words": 13000, "allow_pair": True},
+            {"name": "乙", "role": "副主编", "target_words": 13000, "allow_pair": True},
+            {"name": "丙", "role": "副主编", "target_words": 13000, "allow_pair": True},
+            {"name": "丁", "role": "副主编", "target_words": 13000, "allow_pair": True},
+        ]
+        res = allocate_best(units, people, tolerance=0.5)
+        groups = summarize_projects(res["segments"], units)
+        self.assertEqual(len(groups), 2)                 # 两个项目
+        for g in groups:
+            self.assertEqual(g["pages"], 20)
+            self.assertGreaterEqual(len(g["people"]), 1)
+            self.assertEqual(g["segments"], len(g["detail"]))

@@ -150,6 +150,7 @@ def allocate(
 
     # 项目边界位置（用于 boundary_penalty）
     proj_boundary = set()
+    proj_of = [u.get("project_no") for u in units]
     last_proj = None
     for i, u in enumerate(units):
         if u.get("project_no") != last_proj:
@@ -196,6 +197,8 @@ def allocate(
                 base = f1[k]
                 if base == INF:
                     continue
+                if proj_of[k] != proj_of[i - 1]:
+                    continue
                 w = wi - prefix[k]
                 if hb is not None:
                     r = (w - tgt) / tgt if tgt > 0 else 0.0
@@ -215,6 +218,8 @@ def allocate(
                 for k in range(t - 2, i):
                     base = f2[k]
                     if base == INF:
+                        continue
+                    if proj_of[k] != proj_of[i - 1]:
                         continue
                     w = wi - prefix[k]
                     if hb is not None:
@@ -749,6 +754,9 @@ def allocate_under_bound(
             for k in range(i):
                 if dp[t - 1][k] is None:
                     continue
+                # 段不能跨项目：首尾必须属于同一个项目
+                if proj_of[k] != proj_of[i - 1]:
+                    continue
                 w = prefix[i] - prefix[k]
                 r = (w - target) / target if target else 0.0
                 if -under_bound <= r <= over_cap:
@@ -764,6 +772,8 @@ def allocate_under_bound(
                 tt = target + (people[t - 2].get("target_words") or 0)
                 for k in range(i):
                     if dp[t - 2][k] is None:
+                        continue
+                    if proj_of[k] != proj_of[i - 1]:
                         continue
                     w = prefix[i] - prefix[k]
                     r = (w - tt) / tt if tt else 0.0
@@ -970,3 +980,61 @@ def solve_allow_over(
         except Exception:  # noqa: BLE001
             continue
     return optimize_under_bound(units, people, over_cap=over_cap)
+
+
+def summarize_projects(segments: List[Dict], units: List[Dict]) -> List[Dict]:
+    """按项目汇总：每个项目由哪些人、分几段完成。
+
+    同一个项目内可以有多个人分段写（每人负责连续的一段任务），
+    他们之间就是「合作编写同一项目」的关系。
+    """
+    proj_units: Dict[object, List[int]] = {}
+    proj_label: Dict[object, str] = {}
+    for idx, u in enumerate(units):
+        pn = u.get("project_no")
+        proj_units.setdefault(pn, []).append(idx)
+        if pn not in proj_label:
+            proj_label[pn] = u.get("label") or f"项目{pn}"
+
+    out: List[Dict] = []
+    for pn in sorted(proj_units, key=lambda x: (x is None, x)):
+        idxs = proj_units[pn]
+        page_from = units[idxs[0]]["start"]
+        page_to = units[idxs[-1]]["end"]
+        cur = []
+        for seg in segments:
+            if any(x in idxs for x in seg["unit_idx"]):
+                cur.append(seg)
+        if not cur:
+            continue
+        people: List[Dict] = []
+        seen = set()
+        for seg in cur:
+            for m in seg["members"]:
+                if m["name"] in seen:
+                    continue
+                seen.add(m["name"])
+                people.append({"name": m["name"], "role": m["role"]})
+        out.append({
+            "project_no": pn,
+            "title": proj_label[pn].split("（")[0],
+            "start": page_from,
+            "end": page_to,
+            "pages": page_to - page_from + 1,
+            "segments": len(cur),
+            "people": people,
+            "cooperative": len(people) > 1,
+            "detail": [
+                {
+                    "names": [m["name"] for m in seg["members"]],
+                    "roles": [m["role"] for m in seg["members"]],
+                    "start": seg["start"],
+                    "end": seg["end"],
+                    "pages": seg["pages"],
+                    "words": seg["words"],
+                    "delta_ratio": seg["delta_ratio"],
+                }
+                for seg in cur
+            ],
+        })
+    return out

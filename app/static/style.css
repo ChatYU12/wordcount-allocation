@@ -395,3 +395,24 @@ input[type="range"] { width: 160px; accent-color: var(--amber); }
   border-radius: 4px; background: #e8f3ec; color: #2f5d47;
   font-size: 11px; font-weight: 600;
 }
+
+/* 按项目看的分工 */
+.proj-summary { margin: 4px 0 14px; display: grid; gap: 8px; }
+.proj-row {
+  display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+  padding: 9px 12px; border: 1px solid #e6ebef; border-radius: 9px; background: #fbfcfd;
+}
+.proj-row .p-name { font-weight: 600; color: #1f3a5f; font-size: 13px; }
+.proj-row .p-page { color: #6b7684; font-size: 12px; }
+.proj-row .p-people { display: flex; gap: 6px; flex-wrap: wrap; margin-left: auto; }
+.proj-row .p-chip {
+  font-size: 12px; padding: 2px 8px; border-radius: 999px;
+  background: #eef3f8; color: #2b4d7a; white-space: nowrap;
+}
+.proj-row .p-chip .p-role { color: #8a97a6; margin-left: 4px; }
+.proj-row.coop { border-color: #cfe4d8; background: #f7fbf9; }
+.proj-row.coop .p-chip { background: #e3f1e8; color: #2f5d47; }
+.proj-tag {
+  font-size: 11px; padding: 1px 7px; border-radius: 4px;
+  background: #e8f3ec; color: #2f5d47; font-weight: 600;
+}

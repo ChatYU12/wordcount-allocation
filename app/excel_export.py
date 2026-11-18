@@ -225,7 +225,37 @@ def build_workbook(
     _autosize(ws3, [6, 44, 26, 8, 8, 7, 8, 10, 18, 8])
     ws3.freeze_panes = "A2"
 
-    # ---------- Sheet 4：联合编写分工 ----------
+    # ---------- Sheet 4：按项目分工 ----------
+    groups = res.get("project_summary") or []
+    ws_proj = wb.create_sheet("按项目分工")
+    hp = ["项目", "起始页", "结束页", "页数", "段数", "编写人", "角色", "负责页码", "字数", "偏差"]
+    ws_proj.append(hp)
+    _style_header(ws_proj, 1, len(hp))
+    if groups:
+        for g in groups:
+            for seg in g.get("detail", []):
+                ws_proj.append([
+                    g.get("title", ""), g.get("start"), g.get("end"), g.get("pages"),
+                    g.get("segments"),
+                    " + ".join(seg.get("names", [])),
+                    " + ".join(seg.get("roles", [])),
+                    f"{seg.get('start')}–{seg.get('end')}" + ("（合作）" if len(seg.get("names", [])) > 1 else ""),
+                    seg.get("words"), round((seg.get("delta_ratio") or 0) * 100, 1),
+                ])
+                r = ws_proj.max_row
+                for c in range(1, len(hp) + 1):
+                    ws_proj.cell(row=r, column=c).border = BORDER
+                ws_proj.cell(row=r, column=9).number_format = "#,##0"
+                ws_proj.cell(row=r, column=10).number_format = "+0.0%;-0.0%"
+                if g.get("cooperative"):
+                    for c in range(1, len(hp) + 1):
+                        ws_proj.cell(row=r, column=c).fill = COOP_FILL
+    else:
+        ws_proj.append(["—", "", "", "", "", "本次分配没有按项目汇总的数据", "", "", "", ""])
+    _autosize(ws_proj, [30, 8, 8, 7, 6, 18, 16, 18, 11, 9])
+    ws_proj.freeze_panes = "A2"
+
+    # ---------- Sheet 5：联合编写分工 ----------
     coop_segs = [x for x in res["segments"] if x.get("assignments")]
     ws_coop = wb.create_sheet("联合编写分工")
     hc = ["段", "姓名", "角色", "负责章节", "起始页", "结束页", "页数",
@@ -266,7 +296,7 @@ def build_workbook(
     _autosize(ws_coop, [6, 12, 10, 60, 8, 8, 7, 11, 11, 52])
     ws_coop.freeze_panes = "A2"
 
-    # ---------- Sheet 5：编写任务书 ----------
+    # ---------- Sheet 6：编写任务书 ----------
     ws4 = wb.create_sheet("编写任务书")
     ws4.cell(row=1, column=1, value=f"《{book_title}》编写任务书").font = TITLE_FONT
     ws4.merge_cells(start_row=1, start_column=1, end_row=1, end_column=8)
@@ -323,7 +353,7 @@ def build_workbook(
     _autosize(ws4, [6, 20, 16, 44, 16, 26, 10, 16])
     ws4.freeze_panes = f"A{head_row + 1}"
 
-    # ---------- Sheet 6：计算说明 ----------
+    # ---------- Sheet 7：计算说明 ----------
     ws5 = wb.create_sheet("计算说明")
     lines = [
         ("生成时间", datetime.now().strftime("%Y-%m-%d %H:%M")),

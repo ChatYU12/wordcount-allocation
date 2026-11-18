@@ -665,6 +665,8 @@ function renderResult() {
   tb.appendChild(tr);
 
   // 横幅
+  renderProjectSummary(r);
+
   const banners = $('#banners');
   banners.innerHTML = '';
   const add = (cls, ico, text) => {
@@ -819,6 +821,27 @@ function bindAiAllocate() {
       btn.textContent = label;
     }
   });
+}
+
+/* 按项目展示分工：谁写了哪个项目、哪几页 */
+function renderProjectSummary(r) {
+  const box = $('#projSummary');
+  if (!box) return;
+  const groups = (r && r.project_summary) || [];
+  if (!groups.length) { box.hidden = true; box.innerHTML = ''; return; }
+  box.hidden = false;
+  box.innerHTML = groups.map((g) => {
+    const chips = g.people.map((p) =>
+      `<span class="p-chip">${escapeAttr(p.name)}<span class="p-role">${escapeAttr(p.role)}</span></span>`
+    ).join('');
+    const tag = g.cooperative ? '<span class="proj-tag">合作编写</span>' : '';
+    return `<div class="proj-row${g.cooperative ? ' coop' : ''}">
+      <span class="p-name">${escapeAttr(g.title)}</span>
+      <span class="p-page">第 ${g.start}–${g.end} 页 · ${g.pages} 页 · ${g.segments} 段</span>
+      ${tag}
+      <span class="p-people">${chips}</span>
+    </div>`;
+  }).join('');
 }
 
 /* ---------------- 自动优化名单顺序 ---------------- */

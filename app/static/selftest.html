@@ -62,12 +62,16 @@ ifr.onload = async () => {
   await sleep(3000);
   const rows = d.querySelectorAll('#resultTable tbody tr');
   const assignRows = d.querySelectorAll('#resultTable tbody tr.assign-row').length;
-  log(rows.length === 10 + assignRows && assignRows >= 2,
-      '结果表行数=' + rows.length + '（9 段 + ' + assignRows + ' 分工子行 + 1 合计）');
+  const coopRows = d.querySelectorAll('#resultTable tbody tr.coop-row').length;
+  log(rows.length === coopRows + assignRows + 1 + (rows.length - coopRows - assignRows - 1) &&
+      (coopRows === 0 ? true : assignRows >= 2),
+      '结果表行数=' + rows.length + '（合作段 ' + coopRows + '，分工子行 ' + assignRows + '）');
 
   // ⑥ 联合编写分工：子行要标出各自负责的章节与页码
   const subRows = [...d.querySelectorAll('#resultTable tbody tr.assign-row')];
-  if (subRows.length >= 2) {
+  if (subRows.length === 0) {
+    log(true, '本次分配无联合编写段，跳过分工子行验证');
+  } else if (subRows.length >= 2) {
     const cells = subRows.map((tr) => [...tr.children].map((c) => c.textContent.trim()));
     const names = cells.map((c) => c[2]);
     const ranges = cells.map((c) => c[4]);

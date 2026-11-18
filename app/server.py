@@ -27,7 +27,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from allocator import (  # noqa: E402
     allocate_best, allocate_under_bound, best_under_bound, distribute_words,
     infer_per_page_words, optimize_order, optimize_under_bound, rescale_units,
-    solve_allow_over,
+    solve_allow_over, summarize_projects,
 )
 from excel_export import build_workbook  # noqa: E402
 from pdf_parser import parse_book  # noqa: E402
@@ -385,6 +385,7 @@ def allocate(req: AllocateRequest) -> JSONResponse:
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(400, str(exc)) from exc
 
+    res["project_summary"] = summarize_projects(res["segments"], scaled)
     res["per_page_words"] = ppw
     # 正文页数不含参考文献等非正文部分
     body_pages = sum(u["pages"] for u in units if u.get("kind") != "ref") or total_pages
@@ -545,6 +546,7 @@ def optimize(req: AllocateRequest) -> JSONResponse:
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(400, str(exc)) from exc
 
+    res["project_summary"] = summarize_projects(res["segments"], units)
     res["per_page_words"] = req.per_page_words
     res["body_pages"] = total_pages
     res["units"] = units
