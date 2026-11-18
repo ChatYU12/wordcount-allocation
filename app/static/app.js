@@ -686,6 +686,7 @@ function renderResultInner() {
 
   // 横幅
   renderProjectSummary(r);
+  renderPersonDev(r);
 
   const banners = $('#banners');
   banners.innerHTML = '';
@@ -841,6 +842,22 @@ function bindAiAllocate() {
       btn.textContent = label;
     }
   });
+}
+
+/* 按人展示偏差：合作协议段里两人各算各的，避免被段合计掩盖 */
+function renderPersonDev(r) {
+  const box = $('#personDev');
+  if (!box) return;
+  const d = r && r.person_devs;
+  if (!d || !d.rows || !d.rows.length) { box.hidden = true; return; }
+  box.hidden = false;
+  const worst = d.rows.slice().sort((a, b) => Math.abs(b.delta_ratio) - Math.abs(a.delta_ratio)).slice(0, 4);
+  const pct = (x) => (x >= 0 ? '+' : '') + (x * 100).toFixed(1) + '%';
+  const cls = (x) => (Math.abs(x) <= 0.10 ? 'ok' : 'bad');
+  box.innerHTML = `<div class="pdev-title">每个人的实际偏差（合作协议段内分别计算）</div>
+    <div class="pdev-row"><span>最大欠额</span><b class="${cls(d.max_under)}">${pct(d.max_under)}</b>
+    <span>最大超额</span><b class="${cls(d.max_over)}">${pct(d.max_over)}</b>
+    <span>偏差最大的人</span><b class="${cls(worst[0].delta_ratio)}">${escapeAttr(worst[0].name)} ${pct(worst[0].delta_ratio)}</b></div>`;
 }
 
 /* 按项目展示分工：谁写了哪个项目、哪几页 */

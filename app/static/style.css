@@ -416,3 +416,14 @@ input[type="range"] { width: 160px; accent-color: var(--amber); }
   font-size: 11px; padding: 1px 7px; border-radius: 4px;
   background: #e8f3ec; color: #2f5d47; font-weight: 600;
 }
+
+/* 按人的偏差汇总 */
+.pdev-box {
+  margin: 2px 0 12px; padding: 10px 14px; border-radius: 9px;
+  border: 1px solid #e6ebef; background: #fbfcfd; font-size: 13px;
+}
+.pdev-box .pdev-title { color: #6b7684; font-size: 12px; margin-bottom: 6px; }
+.pdev-box .pdev-row { display: flex; gap: 18px; flex-wrap: wrap; align-items: baseline; }
+.pdev-box .pdev-row span { color: #8a97a6; font-size: 12px; }
+.pdev-box .pdev-row b.ok { color: #2f7d4f; }
+.pdev-box .pdev-row b.bad { color: #b3402f; }

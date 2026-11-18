@@ -177,6 +177,44 @@ class AllocateRequest(BaseModel):
     exit_note: str = ""
 
 
+def _person_deviations(segments: List[Dict]) -> Dict:
+    """按「人」而不是「段」统计偏差——合作协议段里两个人各算各的。"""
+    rows = []
+    for seg in segments:
+        # 合作段用「按任务边界实际分到」的结果，而不是按目标比例算出的理论值
+        assignments = seg.get("assignments")
+        if assignments:
+            for a in assignments:
+                target = a.get("target") or 0
+                if not target:
+                    continue
+                words = a.get("words") or 0
+                rows.append({
+                    "name": a["name"], "role": a.get("role", ""),
+                    "words": words, "target": target,
+                    "delta_ratio": (words - target) / target,
+                })
+            continue
+        for sh in (seg.get("shares") or []):
+            target = sh.get("target") or 0
+            if not target:
+                continue
+            words = sh.get("words") or 0
+            rows.append({
+                "name": sh["name"], "role": sh.get("role", ""),
+                "words": words, "target": target,
+                "delta_ratio": (words - target) / target,
+            })
+    if not rows:
+        return {"max_abs": 0.0, "max_under": 0.0, "max_over": 0.0, "rows": []}
+    return {
+        "max_abs": max(abs(r["delta_ratio"]) for r in rows),
+        "max_under": min(r["delta_ratio"] for r in rows),
+        "max_over": max(r["delta_ratio"] for r in rows),
+        "rows": rows,
+    }
+
+
 def _prepare_units(units: List[Dict], use_figure_discount: bool) -> List[Dict]:
     """按是否启用整页图折减，给每个单元算出字数权重。"""
     out = []
@@ -389,6 +427,7 @@ def allocate(req: AllocateRequest) -> JSONResponse:
         raise HTTPException(400, str(exc)) from exc
 
     res["project_summary"] = summarize_projects(res["segments"], scaled)
+    res["person_devs"] = _person_deviations(res["segments"])
     res["per_page_words"] = ppw
     # 正文页数不含参考文献等非正文部分
     body_pages = sum(u["pages"] for u in units if u.get("kind") != "ref") or total_pages

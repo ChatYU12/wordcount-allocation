@@ -223,15 +223,19 @@ def allocate(
                     if no_cross_project and proj_of[k] != proj_of[i - 1]:
                         continue
                     w = wi - prefix[k]
-                    if hb is not None:
-                        r = (w - pair_tgt) / pair_tgt if pair_tgt > 0 else 0.0
-                        if abs(r) > hb + 1e-12:
-                            if r < 0:
-                                break
-                            continue
-                    if not pair_split_ok(units, k, i, people[t - 2], people[t - 1]):
+                    # 合作段按「两个人各自离目标多远」来评估，
+                    # 而不是只看段合计——否则会出现段合计很准、个人却差很多的情况
+                    split_at, dev = pair_split_quality(
+                        units, list(range(k, i)), [people[t - 2], people[t - 1]]
+                    )
+                    if dev > PAIR_SPLIT_MAX_DEV:
                         continue
-                    cost = base + _pen(w, pair_tgt)
+                    seg_r = abs((w - pair_tgt) / pair_tgt) if pair_tgt > 0 else 0.0
+                    if hb is not None and seg_r > hb + 1e-12:
+                        continue
+                    # 代价取「段级偏差」和「段内个人偏差」中更差的那个，
+                    # 让算法在段级可行的前提下尽量挑个人也均衡的切法
+                    cost = base + max(seg_r, dev) * 100.0
                     if k not in nb:
                         cost += bp
                     if cost < best:
@@ -785,11 +789,16 @@ def allocate_under_bound(
                         continue
                     w = prefix[i] - prefix[k]
                     r = (w - tt) / tt if tt else 0.0
-                    if -under_bound <= r <= over_cap and pair_split_ok(
-                        units, k, i, people[t - 2], p
-                    ):
-                        dp[t][i] = (k, "pair", t - 1)
-                        break
+                    if not (-under_bound <= r <= over_cap):
+                        continue
+                    # 合作段按两人各自的偏差判断，避免「段合计合规、个人超标」
+                    _, dev = pair_split_quality(
+                        units, list(range(k, i)), [people[t - 2], p]
+                    )
+                    if dev > PAIR_SPLIT_MAX_DEV:
+                        continue
+                    dp[t][i] = (k, "pair", t - 1)
+                    break
 
     if dp[m][n] is None:
         raise ValueError(
