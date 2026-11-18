@@ -24,6 +24,10 @@ from __future__ import annotations
 import itertools
 from typing import Dict, List, Optional, Tuple
 
+# 合作段内两人分得的工作量，偏差超过这个比例就说明「切不开」，
+# 不允许用合作来硬凑段级偏差（例如主编只拿 2 页、副主编拿 55 页）
+PAIR_SPLIT_MAX_DEV = 0.6
+
 ROLE_CHIEF = "主编"
 ROLE_VICE = "副主编"
 ROLE_MEMBER = "参编"
@@ -219,6 +223,8 @@ def allocate(
                             if r < 0:
                                 break
                             continue
+                    if not pair_split_ok(units, k, i, people[t - 2], people[t - 1]):
+                        continue
                     cost = base + _pen(w, pair_tgt)
                     if k not in nb:
                         cost += bp
@@ -468,6 +474,52 @@ def rescale_units(units: List[Dict], per_page_words: int) -> List[Dict]:
     return out
 
 
+def _best_split_index(words: List[int], want: float) -> int:
+    """在累积字数最接近 want 比例的单元边界处切分，返回切点下标。"""
+    total_w = sum(words)
+    if total_w <= 0:
+        return 1
+    cum = 0
+    best_k = 1
+    best_diff = None
+    for k in range(1, len(words)):
+        cum += words[k - 1]
+        diff = abs(cum / total_w - want)
+        if best_diff is None or diff < best_diff:
+            best_diff, best_k = diff, k
+    return best_k
+
+
+def pair_split_quality(
+    units: List[Dict], unit_idx: List[int], members: List[Dict]
+) -> Tuple[Optional[int], float]:
+    """评估一段合作能否公平切开：返回 (切点下标, 两人中较差的偏差比例)。
+
+    切点只能落在任务边界上。如果这段里有一个任务特别大，无论怎么切都会
+    一边超很多、另一边欠很多，这种「假合作」应当避免。
+    """
+    if len(members) != 2 or len(unit_idx) < 2:
+        return None, 1.0
+    t0 = max(0, members[0].get("target_words") or 0)
+    t1 = max(0, members[1].get("target_words") or 0)
+    if t0 + t1 <= 0:
+        return None, 1.0
+    words = [units[x].get("words") or 0 for x in unit_idx]
+    k = _best_split_index(words, t0 / (t0 + t1))
+    a = sum(words[:k])
+    b = sum(words[k:])
+    dev_a = abs(a - t0) / t0 if t0 else 1.0
+    dev_b = abs(b - t1) / t1 if t1 else 1.0
+    return k, max(dev_a, dev_b)
+
+
+def pair_split_ok(units: List[Dict], k: int, i: int,
+                  a: Dict, b: Dict) -> bool:
+    """这段能不能公平地分给两个人。"""
+    _, dev = pair_split_quality(units, list(range(k, i)), [a, b])
+    return dev <= PAIR_SPLIT_MAX_DEV
+
+
 def split_cooperative_assignment(
     unit_idx: List[int], units: List[Dict], members: List[Dict]
 ) -> Optional[List[Dict]]:
@@ -489,15 +541,7 @@ def split_cooperative_assignment(
     if total_w <= 0:
         return None
 
-    want = t0 / total_t
-    cum = 0
-    best_k = 1
-    best_diff = None
-    for k in range(1, len(unit_idx)):
-        cum += words[k - 1]
-        diff = abs(cum / total_w - want)
-        if best_diff is None or diff < best_diff:
-            best_diff, best_k = diff, k
+    best_k = _best_split_index(words, t0 / total_t)
 
     out = []
     for member, slice_idx in ((members[0], unit_idx[:best_k]), (members[1], unit_idx[best_k:])):
@@ -723,7 +767,9 @@ def allocate_under_bound(
                         continue
                     w = prefix[i] - prefix[k]
                     r = (w - tt) / tt if tt else 0.0
-                    if -under_bound <= r <= over_cap:
+                    if -under_bound <= r <= over_cap and pair_split_ok(
+                        units, k, i, people[t - 2], p
+                    ):
                         dp[t][i] = (k, "pair", t - 1)
                         break
 
@@ -846,7 +892,8 @@ def optimize_under_bound(
         orders = [orders[int(i * step)] for i in range(max_orders)]
 
     if ladder is None:
-        ladder = [0.04, 0.05, 0.06, 0.07, 0.08, 0.09, 0.10, 0.12, 0.15]
+        ladder = [0.04, 0.05, 0.06, 0.07, 0.08, 0.09, 0.10, 0.12, 0.15,
+                  0.20, 0.25, 0.30, 0.40, 0.55, 0.70]
 
     best = None
     best_order: Optional[List[Dict]] = None
@@ -915,8 +962,9 @@ def solve_allow_over(
     先按当前名单顺序从紧到松试一遍（顺序已优化过时会立刻命中），
     都不行再搜索最优顺序。
     """
-    ladder = [0.04, 0.05, 0.06, 0.07, 0.08, 0.09, 0.10, 0.12, 0.15, 0.20, 0.25]
-    for ub in ladder:
+    # 先用当前顺序快速试几个较紧的界限；都不行再搜索顺序。
+    # 注意界限不能放太宽——否则「当前顺序的差方案」会提前返回，挡住更优的顺序。
+    for ub in (0.04, 0.05, 0.06, 0.07, 0.08, 0.09, 0.10, 0.12, 0.15):
         try:
             return allocate_under_bound(units, people, under_bound=ub, over_cap=over_cap)
         except Exception:  # noqa: BLE001

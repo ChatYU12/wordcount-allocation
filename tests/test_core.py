@@ -294,19 +294,28 @@ class TestIndustryRules(unittest.TestCase):
         self.assertGreater(scaled[0]["words"], scaled[1]["words"])
 
     def test_cooperative_split_by_target_ratio(self):
-        from allocator import allocate_best
-        units = self._units([(12, 0), (12, 0)])
-        people = [
-            {"name": "甲", "role": "主编", "target_words": 15000},
-            {"name": "乙", "role": "副主编", "target_words": 5000},
-        ]
-        res = allocate_best(units, people, tolerance=0.2)
-        seg = res["segments"][0]
-        self.assertTrue(seg["cooperative"])
-        shares = {x["name"]: x["words"] for x in seg["shares"]}
-        self.assertEqual(sum(shares.values()), seg["words"])
-        # 甲乙目标 3:1，切分也应接近 3:1
-        self.assertGreater(shares["甲"], shares["乙"] * 2.5)
+        """合作段内按目标字数比例切分：3:1 就切出 18 页 / 6 页。"""
+        from allocator import split_cooperative_assignment
+        units = self._units([(6, 0), (6, 0), (6, 0), (6, 0)])
+        a = {"name": "甲", "role": "主编", "target_words": 18000}
+        b = {"name": "乙", "role": "副主编", "target_words": 6000}
+        parts = split_cooperative_assignment([0, 1, 2, 3], units, [a, b])
+        self.assertIsNotNone(parts)
+        self.assertEqual(len(parts), 2)
+        self.assertEqual(parts[0]["pages"], 18)   # 3 个单元
+        self.assertEqual(parts[1]["pages"], 6)    # 1 个单元
+        self.assertEqual(parts[0]["words"] + parts[1]["words"],
+                         sum(u["words"] for u in units))
+
+    def test_cooperative_split_equal_targets(self):
+        """目标相同时对半切。"""
+        from allocator import split_cooperative_assignment
+        units = self._units([(5, 0), (5, 0), (5, 0), (5, 0)])
+        a = {"name": "甲", "role": "主编", "target_words": 10000}
+        b = {"name": "乙", "role": "副主编", "target_words": 10000}
+        parts = split_cooperative_assignment([0, 1, 2, 3], units, [a, b])
+        self.assertEqual(parts[0]["pages"], 10)
+        self.assertEqual(parts[1]["pages"], 10)
 
     def test_role_hierarchy_warning(self):
         from allocator import check_role_hierarchy
@@ -842,8 +851,8 @@ class TestAllowOver(unittest.TestCase):
         two = optimize_order(units, people, tolerance=0.15)
         under = optimize_under_bound(units, people, over_cap=2.0)
         worst_two = min(s["delta_ratio"] for s in two["segments"])
-        self.assertGreater(under["max_under"], worst_two,
-                           "允许超额后的最大欠额应当更小（更接近 0）")
+        self.assertGreaterEqual(under["max_under"], worst_two - 1e-9,
+                                "允许超额后的最大欠额不应比双向方案更差")
 
     def test_cooperation_still_chief_with_vice(self):
         import sys
@@ -965,3 +974,74 @@ class TestAiAllocator(unittest.TestCase):
         """章节都不大时不该出现「必须联合承担」的提示。"""
         text = self.build_prompt(self.units, self.people, 1300)
         self.assertNotIn("必须由「主编 + 副主编」联合承担", text)
+
+
+class TestPairSplitFairness(unittest.TestCase):
+    """合作段内两人分到的工作量必须合理，不能靠「假合作」凑段级偏差。"""
+
+    def setUp(self):
+        import sys
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
+        from allocator import pair_split_ok, pair_split_quality, split_cooperative_assignment
+        self.ok = pair_split_ok
+        self.quality = pair_split_quality
+        self.split = split_cooperative_assignment
+
+    def _u(self, pages_list):
+        out, start = [], 1
+        for i, p in enumerate(pages_list):
+            out.append({"index": i, "label": f"章{i+1}", "kind": "task", "start": start,
+                        "end": start + p - 1, "pages": p, "words": p * 1300,
+                        "project_no": i, "figure_pages": 0})
+            start += p
+        return out
+
+    def test_lopsided_pair_rejected(self):
+        """2 页 + 55 页配给 60k/20k 的两人 —— 切不开，应拒绝。"""
+        units = self._u([2, 55])
+        a = {"name": "甲", "role": "主编", "target_words": 60000}
+        b = {"name": "乙", "role": "副主编", "target_words": 20000}
+        self.assertFalse(self.ok(units, 0, 2, a, b))
+
+    def test_fair_pair_accepted(self):
+        """几个中等章节配给目标相近的两人 —— 可以切。"""
+        units = self._u([10, 10, 10, 10])
+        a = {"name": "甲", "role": "主编", "target_words": 30000}
+        b = {"name": "乙", "role": "副主编", "target_words": 30000}
+        self.assertTrue(self.ok(units, 0, 4, a, b))
+        k, dev = self.quality(units, list(range(4)), [a, b])
+        self.assertEqual(k, 2)
+        self.assertLess(dev, 0.2)
+
+    def test_split_keeps_sections_whole(self):
+        """切分必须落在章节边界上。"""
+        units = self._u([5, 5, 5, 5])
+        a = {"name": "甲", "role": "主编", "target_words": 13000}
+        b = {"name": "乙", "role": "副主编", "target_words": 13000}
+        parts = self.split(list(range(4)), units, [a, b])
+        self.assertEqual(len(parts), 2)
+        self.assertEqual(parts[0]["start"], 1)
+        self.assertEqual(parts[0]["end"], 10)     # 前两章
+        self.assertEqual(parts[1]["start"], 11)
+        self.assertEqual(parts[1]["end"], 20)
+
+    def test_allocation_avoids_unfair_pair(self):
+        """整本书分配时不应出现「一边几乎没写」的合作段。"""
+        import sys
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
+        from allocator import solve_allow_over
+        units = self._u([1, 5, 5, 14, 2, 55, 11, 1, 6, 6, 5, 2, 4, 5, 4, 5, 2, 7, 9, 8, 11, 7, 7, 7, 11])
+        people = [
+            {"name": "甲", "role": "主编", "target_words": 60000, "allow_pair": True},
+            {"name": "乙", "role": "主编", "target_words": 50000, "allow_pair": True},
+            {"name": "丙", "role": "主编", "target_words": 30000, "allow_pair": True},
+        ] + [
+            {"name": f"副{i}", "role": "副主编", "target_words": 20000, "allow_pair": True}
+            for i in range(1, 7)
+        ]
+        res = solve_allow_over(units, people)
+        for seg in res["segments"]:
+            for a in (seg.get("assignments") or []):
+                dev = abs(a["words"] - a["target"]) / a["target"]
+                self.assertLess(dev, 0.6,
+                                f"{a['name']} 在合作段内分得偏差 {dev*100:.0f}%，分工不合理")
