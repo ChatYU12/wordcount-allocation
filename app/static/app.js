@@ -594,6 +594,25 @@ async function runAllocate() {
 
 /* ---------------- 结果渲染 ---------------- */
 function renderResult() {
+  try {
+    renderResultInner();
+  } catch (err) {
+    console.error('渲染结果失败', err);
+    const banners = $('#banners');
+    if (banners) {
+      banners.innerHTML = '';
+      const d = document.createElement('div');
+      d.className = 'banner warn';
+      d.innerHTML = '<span class="b-ico">!</span><span>方案已算出，但显示时出错：'
+        + escapeAttr(err.message) + '。请刷新页面重试。</span>';
+      banners.appendChild(d);
+    }
+    const hint = $('#resultHint');
+    if (hint) hint.textContent = '显示异常：' + err.message;
+  }
+}
+
+function renderResultInner() {
   const r = state.result;
   const tb = $('#resultTable tbody');
   tb.innerHTML = '';
