@@ -315,7 +315,6 @@ def parse_rows(rows: List[List[str]]) -> Dict:
                 )
                 role = fixed
                 rank = RANK[role]
-            last_rank = rank
             current_role = role
             if not names_in_row:
                 names_in_row = cells[1:]
@@ -333,6 +332,7 @@ def parse_rows(rows: List[List[str]]) -> Dict:
                     title = joined
             continue
 
+        added = 0
         for cell in names_in_row:
             name = clean_name(cell)
             if not name:
@@ -343,6 +343,11 @@ def parse_rows(rows: List[List[str]]) -> Dict:
                 continue
             seen[name] = role
             authors.append({"name": name, "role": role})
+            added += 1
+        # 只有真的收到姓名，才把它作为「上一次的角色」——
+        # 否则像「主编 ◎张三」这种没解析出姓名的行，会把后面正常的主编误判成漏字降级
+        if added and role:
+            last_rank = RANK[role]
 
     return {"title": title, "authors": authors, "warnings": warnings}
 

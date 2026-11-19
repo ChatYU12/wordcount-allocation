@@ -35,9 +35,14 @@ RE_TASK = re.compile(r"^任务\s*[一二三四五六七八九十百]+")
 RE_REF = re.compile(r"^参考文献")
 # 兼容其他书稿结构：章 / 节 / 单元 / 课题
 RE_CHAPTER = re.compile(r"^(第\s*[一二三四五六七八九十百0-9]+\s*章|单元\s*[一二三四五六七八九十])")
-RE_SECTION = re.compile(r"^(第\s*[一二三四五六七八九十百0-9]+\s*节|课题\s*[一二三四五六七八九十])")
+RE_SECTION = re.compile(
+    r"^(第\s*[一二三四五六七八九十百0-9]+\s*节"
+    r"|课题\s*[一二三四五六七八九十]"
+    r"|活动\s*[一二三四五六七八九十0-9]+)"
+)
 RE_TAIL = re.compile(r"^(" + "|".join(TAIL_TITLES) + r")")
-RE_PAGE_NO = re.compile(r"^[0-9]{1,4}$")
+# 页码的各种写法：(3) （３） [3] 3 3页 —— 目录里括号包裹的很常见
+RE_PAGE_NO = re.compile(r"^[（(\[【]?\s*([0-9]{1,4})\s*[）)\]】]?\s*页?$")
 
 
 def _norm(s: str) -> str:
@@ -132,8 +137,9 @@ def parse_toc_text(lines: List[str]) -> List[Dict]:
                 line = line[: inline.start()].strip()
             elif i + 1 < n:
                 nxt = lines[i + 1]
-                if RE_PAGE_NO.match(nxt):
-                    page = int(nxt)
+                m2 = RE_PAGE_NO.match(nxt)
+                if m2:
+                    page = int(m2.group(1))
                     i += 1
             if page is not None:
                 nodes.append(
@@ -146,8 +152,32 @@ def parse_toc_text(lines: List[str]) -> List[Dict]:
                         "task_no": None,
                     }
                 )
+            elif kind in (KIND_MODULE, KIND_PROJECT):
+                # 项目标题下面直接跟任务（标题本身没有页码）——先记下，稍后补
+                nodes.append(
+                    {
+                        "title": clean_title(line),
+                        "kind": kind,
+                        "book_page": None,
+                        "level": _level_of(kind),
+                        "project_no": None,
+                        "task_no": None,
+                    }
+                )
         i += 1
-    return _attach_numbers(nodes)
+    return _attach_numbers(_fill_missing_pages(nodes))
+
+
+def _fill_missing_pages(nodes: List[Dict]) -> List[Dict]:
+    """项目/模块标题没页码时，用后面第一个有页码的节点补上（通常同页）。"""
+    for i, nd in enumerate(nodes):
+        if nd.get("book_page") is not None:
+            continue
+        for nxt in nodes[i + 1:]:
+            if nxt.get("book_page") is not None:
+                nd["book_page"] = nxt["book_page"]
+                break
+    return [nd for nd in nodes if nd.get("book_page") is not None]
 
 
 def _level_of(kind: str) -> int:
@@ -391,20 +421,13 @@ def _norm_author_role(word: str) -> str:
 def detect_authors(doc: "fitz.Document", max_pages: int = 12) -> List[Dict]:
     """从扉页 / 版权页识别编写名单。
 
-    出版物扉页通常长这样（换行、全角空格分隔）：
-
-        总主编　邹文开
-        主　编　夏　群
-        邓竹君
-        副主编　汪　涛
-        ...
-
-    规则：角色词打头 → 其后是姓名；紧随其后的纯姓名行延续同一角色；
-    遇到任何非角色、非姓名的行就终止当前姓名块（这条最关键，否则会一路
-    吃到目录页的「项目检测」上）。
+    直接复用封面解析那套排版还原逻辑（拆空白、合并被拆开的角色词与单字姓名、
+    角色降级、形近字兜底）。整行匹配对付不了「主　编　郭佳玉　邓艳华　谭满妹」
+    这种一行多人的写法，复用 parse_rows 才拆得开。
     """
-    authors: List[Dict] = []
-    current = None
+    from cover_parser import parse_rows, text_to_rows  # noqa: PLC0415
+
+    rows: List[List[str]] = []
     for i in range(min(max_pages, doc.page_count)):
         try:
             page_text = doc[i].get_text()
@@ -412,41 +435,16 @@ def detect_authors(doc: "fitz.Document", max_pages: int = 12) -> List[Dict]:
             continue
         if not page_text:
             continue
-        # 目录页：点线引导符密集，或出现「目录」字样 → 名单区已结束
-        if page_text.count("\u8004\u8005") > 0:  # 占位，真实判断在下一行
-            pass
-        if page_text.count("\uf0b7") > 5 or "\u200b" in page_text:
-            break
+        # 目录页 = 名单区结束
         if re.search(r"(目\s*录|contents)", page_text, re.I):
             break
-        for raw in page_text.splitlines():
-            line = raw.strip()
-            if not line:
-                continue
-            compact = re.sub(r"[\s\u3000\u00a0]+", "", line)
-            if not compact:
-                continue
-            m = _ROLE_MARK_RE.match(compact)
-            if m:
-                current = _norm_author_role(m.group(1))
-                rest = compact[m.end():]
-                if _AUTHOR_NAME_RE.match(rest) and rest not in _AUTHOR_NOISE:
-                    authors.append({"name": rest, "role": current})
-                continue
-            if current and _AUTHOR_NAME_RE.match(compact) and compact not in _AUTHOR_NOISE:
-                authors.append({"name": compact, "role": current})
-                continue
-            current = None
+        if page_text.count("\uf0b7") > 5:
+            break
+        rows.extend(text_to_rows(page_text))
 
-    seen, out = set(), []
-    for a in authors:
-        if a["name"] in seen:
-            continue
-        seen.add(a["name"])
-        out.append(a)
-    rank = {"总主编": 0, "主编": 1, "副主编": 2, "参编": 3}
-    out.sort(key=lambda a: rank.get(a["role"], 9))
-    return out
+    parsed = parse_rows(rows)
+    return parsed.get("authors") or []
+
 
 
 def build_units(
@@ -487,6 +485,9 @@ def build_units(
             end = end_default
         nd["_start"] = start
         nd["_end"] = max(end, start)
+        # 标题与下一节同页时（项目标题紧跟第一个任务、任务标题紧跟第一个活动），
+        # 该标题不单独占页，否则会和后面的块重叠
+        nd["_zero_page"] = end < start
 
     # 2) 归并成单元
     units: List[Dict] = []
@@ -499,6 +500,8 @@ def build_units(
                 continue
             units.append(_mk_unit(nd, "ref", nd["_start"], nd["_end"]))
             continue
+        if nd.get("_zero_page") and kind != KIND_REF:
+            continue  # 与下一节同页的纯标题，不单独成块
         if kind == KIND_PROJECT:
             units.append(_mk_unit(nd, "project-head", nd["_start"], nd["_end"]))
             continue

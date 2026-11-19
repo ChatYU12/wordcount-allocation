@@ -49,14 +49,17 @@ class TestTocParsing(unittest.TestCase):
             "参考文献", "２９７",
         ]
         nodes = parse_toc_text(lines)
-        self.assertEqual(len(nodes), 5)
-        self.assertEqual(nodes[0]["kind"], "project")
+        # 「模块一」本身没有页码，会继承下一个节点的页码保留下来（成块时再并入项目头）
+        self.assertEqual(len(nodes), 6)
+        self.assertEqual(nodes[0]["kind"], "module")
         self.assertEqual(nodes[0]["book_page"], 3)
-        self.assertEqual(nodes[1]["book_page"], 5)
-        self.assertEqual(nodes[1]["task_no"], 1)
-        self.assertEqual(nodes[2]["task_no"], 2)
-        self.assertEqual(nodes[3]["kind"], "tail")
-        self.assertEqual(nodes[4]["kind"], "ref")
+        self.assertEqual(nodes[1]["kind"], "project")
+        self.assertEqual(nodes[1]["book_page"], 3)
+        self.assertEqual(nodes[2]["book_page"], 5)
+        self.assertEqual(nodes[2]["task_no"], 1)
+        self.assertEqual(nodes[3]["task_no"], 2)
+        self.assertEqual(nodes[4]["kind"], "tail")
+        self.assertEqual(nodes[5]["kind"], "ref")
 
     def test_inline_page_number(self):
         nodes = parse_toc_text(["项目一 职业认知 3", "任务一 职业岗位认知 5"])
